@@ -1,0 +1,649 @@
+name: PR Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check if src/data/* was changed (excluding __init__.py)
+        id: check-changes
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep "^src/data/" | grep -v "__init__.py")
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Add 友链申请中 tag
+        if: steps.check-changes.outputs.changed == 'true'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 友链申请中
+          color: "#FF9800"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Install dependencies
+        if: steps.check-changes.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip
+          pip3 install requests
+      
+      - name: Validate file structure
+        if: steps.check-changes.outputs.changed == 'true'
+        id: validate-structure
+        run: |
+          CHANGED_FILES=$(echo "${{ steps.check-changes.outputs.files }}")
+          VALID=true
+          for FILE in $CHANGED_FILES; do
+            if [[ $FILE != *.py ]]; then
+              echo "Error: $FILE is not a Python file"
+              VALID=false
+              break
+            fi
+            
+            python3 -c "
+import ast
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Parse the file
+module = ast.parse(content)
+
+# Check if DATA variable exists
+found_data = False
+for node in ast.walk(module):
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == 'DATA':
+                found_data = True
+                break
+    if found_data:
+        break
+
+if not found_data:
+    print('Error: DATA variable not found')
+    exit(1)
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Check required fields
+required_fields = ['name', 'description', 'uri']
+for field in required_fields:
+    if field not in data:
+        print(f'Error: Missing required field: {field}')
+        exit(1)
+
+# Check optional fields
+optional_fields = ['avatar_uri']
+for field in data:
+    if field not in required_fields and field not in optional_fields:
+        print(f'Error: Unexpected field: {field}')
+        exit(1)
+"
+            if [ $? -ne 0 ]; then
+              VALID=false
+              break
+            fi
+          done
+          
+          if [ "$VALID" = true ]; then
+            echo "valid=true" >> $GITHUB_OUTPUT
+          else
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Add 文件结构符合 tag
+        if: steps.validate-structure.outputs.valid == 'true'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 文件结构符合
+          color: "#4CAF50"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Add 文件结构不一致 tag
+        if: steps.validate-structure.outputs.valid == 'false'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 文件结构不一致
+          color: "#F44336"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Comment on PR about file structure
+        if: steps.validate-structure.outputs.valid == 'false'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "文件结构不一致，请修改文件结构以符合要求。修改完成后请回复‘已修改’。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update PR title
+        if: steps.validate-structure.outputs.valid == 'true'
+        run: |
+          CHANGED_FILES=$(echo "${{ steps.check-changes.outputs.files }}")
+          for FILE in $CHANGED_FILES; do
+            python3 -c "
+import ast
+import os
+import subprocess
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Update PR title
+pr_title = f'友链：{data["name"]}'
+subprocess.run([
+    'gh', 'pr', 'edit', '${{ github.event.pull_request.number }}', 
+    '--title', pr_title
+], env=os.environ)
+print(f'Updated PR title to: {pr_title}')
+"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Validate URLs
+        if: steps.validate-structure.outputs.valid == 'true'
+        id: validate-urls
+        run: |
+          CHANGED_FILES=$(echo "${{ steps.check-changes.outputs.files }}")
+          ALL_REACHABLE=true
+          SOME_REACHABLE=false
+          
+          for FILE in $CHANGED_FILES; do
+            python3 -c "
+import ast
+import requests
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Validate URI
+uri_reachable = False
+try:
+    response = requests.head(data['uri'], timeout=10)
+    response.raise_for_status()
+    uri_reachable = True
+except Exception as e:
+    print(f'URI not reachable: {e}')
+
+# Validate avatar_uri if present
+avatar_reachable = True
+if 'avatar_uri' in data:
+    try:
+        response = requests.head(data['avatar_uri'], timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f'avatar_uri not reachable: {e}')
+        avatar_reachable = False
+
+print(f'uri_reachable={uri_reachable}')
+print(f'avatar_reachable={avatar_reachable}')
+"
+          done | while read line; do
+            if [[ $line == uri_reachable=false ]]; then
+              ALL_REACHABLE=false
+            elif [[ $line == uri_reachable=true ]]; then
+              SOME_REACHABLE=true
+            fi
+            if [[ $line == avatar_reachable=false ]]; then
+              ALL_REACHABLE=false
+            elif [[ $line == avatar_reachable=true ]]; then
+              SOME_REACHABLE=true
+            fi
+          done
+          
+          if [ "$ALL_REACHABLE" = true ]; then
+            echo "status=all_reachable" >> $GITHUB_OUTPUT
+          elif [ "$SOME_REACHABLE" = true ]; then
+            echo "status=some_reachable" >> $GITHUB_OUTPUT
+          else
+            echo "status=none_reachable" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Remove URL tags
+        if: steps.validate-structure.outputs.valid == 'true'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: URL全部可达
+          remove: true
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Remove URL tags
+        if: steps.validate-structure.outputs.valid == 'true'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 部分URL不可达
+          remove: true
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Remove URL tags
+        if: steps.validate-structure.outputs.valid == 'true'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: URL全部不可达
+          remove: true
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Add URL全部可达 tag
+        if: steps.validate-urls.outputs.status == 'all_reachable'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: URL全部可达
+          color: "#4CAF50"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Add 部分URL不可达 tag
+        if: steps.validate-urls.outputs.status == 'some_reachable'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 部分URL不可达
+          color: "#FF9800"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Add URL全部不可达 tag
+        if: steps.validate-urls.outputs.status == 'none_reachable'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: URL全部不可达
+          color: "#F44336"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Comment on PR about URL validation
+        if: steps.validate-urls.outputs.status != 'all_reachable'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "URL验证失败，请检查并修改URL。修改完成后请回复‘准备完毕’。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Add 验证网站所有权 tag
+        if: steps.validate-urls.outputs.status == 'all_reachable'
+        uses: actions-gh-pages/label-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label: 验证网站所有权
+          color: "#2196F3"
+          issue-number: ${{ github.event.pull_request.number }}
+      
+      - name: Comment on PR about ownership validation
+        if: steps.validate-urls.outputs.status == 'all_reachable'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  handle-comment:
+    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check if comment is from PR author
+        id: check-author
+        run: |
+          PR_AUTHOR=$(gh pr view ${{ github.event.issue.number }} --json author --jq '.author.login')
+          COMMENT_AUTHOR=${{ github.event.comment.user.login }}
+          if [ "$PR_AUTHOR" = "$COMMENT_AUTHOR" ]; then
+            echo "is_author=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_author=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Handle 已修改 comment
+        if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '已修改' }}
+        run: |
+          # Re-run file structure validation
+          CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+          if [ -n "$CHANGED_FILES" ]; then
+            VALID=true
+            for FILE in $CHANGED_FILES; do
+              if [[ $FILE != *.py ]]; then
+                VALID=false
+                break
+              fi
+              
+              python3 -c "
+import ast
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Parse the file
+module = ast.parse(content)
+
+# Check if DATA variable exists
+found_data = False
+for node in ast.walk(module):
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == 'DATA':
+                found_data = True
+                break
+    if found_data:
+        break
+
+if not found_data:
+    print('Error: DATA variable not found')
+    exit(1)
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Check required fields
+required_fields = ['name', 'description', 'uri']
+for field in required_fields:
+    if field not in data:
+        print(f'Error: Missing required field: {field}')
+        exit(1)
+
+# Check optional fields
+optional_fields = ['avatar_uri']
+for field in data:
+    if field not in required_fields and field not in optional_fields:
+        print(f'Error: Unexpected field: {field}')
+        exit(1)
+"
+              if [ $? -ne 0 ]; then
+                VALID=false
+                break
+              fi
+            done
+            
+            if [ "$VALID" = true ]; then
+              # Remove 文件结构不一致 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/文件结构不一致 -X DELETE
+              # Add 文件结构符合 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="文件结构符合" -f color="#4CAF50"
+              # Update PR title
+              for FILE in $CHANGED_FILES; do
+                python3 -c "
+import ast
+import os
+import subprocess
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Update PR title
+pr_title = f'友链：{data["name"]}'
+subprocess.run([
+    'gh', 'pr', 'edit', '${{ github.event.issue.number }}', 
+    '--title', pr_title
+], env=os.environ)
+print(f'Updated PR title to: {pr_title}')
+"
+              done
+              # Validate URLs
+              ALL_REACHABLE=true
+              SOME_REACHABLE=false
+              
+              for FILE in $CHANGED_FILES; do
+                python3 -c "
+import ast
+import requests
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Validate URI
+uri_reachable = False
+try:
+    response = requests.head(data['uri'], timeout=10)
+    response.raise_for_status()
+    uri_reachable = True
+except Exception as e:
+    print(f'URI not reachable: {e}')
+
+# Validate avatar_uri if present
+avatar_reachable = True
+if 'avatar_uri' in data:
+    try:
+        response = requests.head(data['avatar_uri'], timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f'avatar_uri not reachable: {e}')
+        avatar_reachable = False
+
+print(f'uri_reachable={uri_reachable}')
+print(f'avatar_reachable={avatar_reachable}')
+"
+              done | while read line; do
+                if [[ $line == uri_reachable=false ]]; then
+                  ALL_REACHABLE=false
+                elif [[ $line == uri_reachable=true ]]; then
+                  SOME_REACHABLE=true
+                fi
+                if [[ $line == avatar_reachable=false ]]; then
+                  ALL_REACHABLE=false
+                elif [[ $line == avatar_reachable=true ]]; then
+                  SOME_REACHABLE=true
+                fi
+              done
+              
+              # Remove URL tags
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部可达 -X DELETE || true
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/部分URL不可达 -X DELETE || true
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部不可达 -X DELETE || true
+              
+              if [ "$ALL_REACHABLE" = true ]; then
+                # Add URL全部可达 tag
+                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部可达" -f color="#4CAF50"
+                # Add 验证网站所有权 tag
+                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="验证网站所有权" -f color="#2196F3"
+                # Comment on PR
+                gh pr comment ${{ github.event.issue.number }} --body "文件结构验证通过，URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
+              else
+                if [ "$SOME_REACHABLE" = true ]; then
+                  # Add 部分URL不可达 tag
+                  gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="部分URL不可达" -f color="#FF9800"
+                else
+                  # Add URL全部不可达 tag
+                  gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部不可达" -f color="#F44336"
+                fi
+                # Comment on PR
+                gh pr comment ${{ github.event.issue.number }} --body "文件结构验证通过，但URL验证失败，请检查并修改URL。修改完成后请回复‘准备完毕’。"
+              fi
+            else
+              # Comment on PR
+              gh pr comment ${{ github.event.issue.number }} --body "文件结构仍然不一致，请继续修改。修改完成后请回复‘已修改’。"
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Handle 准备完毕 comment
+        if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '准备完毕' }}
+        run: |
+          # Check if this is for URL validation or ownership validation
+          HAS_URL_TAGS=$(gh pr view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' | grep -E "部分URL不可达|URL全部不可达")
+          HAS_OWNERSHIP_TAG=$(gh pr view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' | grep "验证网站所有权")
+          
+          if [ -n "$HAS_URL_TAGS" ]; then
+            # Re-validate URLs
+            CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+            ALL_REACHABLE=true
+            SOME_REACHABLE=false
+            
+            for FILE in $CHANGED_FILES; do
+              python3 -c "
+import ast
+import requests
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Validate URI
+uri_reachable = False
+try:
+    response = requests.head(data['uri'], timeout=10)
+    response.raise_for_status()
+    uri_reachable = True
+except Exception as e:
+    print(f'URI not reachable: {e}')
+
+# Validate avatar_uri if present
+avatar_reachable = True
+if 'avatar_uri' in data:
+    try:
+        response = requests.head(data['avatar_uri'], timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f'avatar_uri not reachable: {e}')
+        avatar_reachable = False
+
+print(f'uri_reachable={uri_reachable}')
+print(f'avatar_reachable={avatar_reachable}')
+"
+            done | while read line; do
+              if [[ $line == uri_reachable=false ]]; then
+                ALL_REACHABLE=false
+              elif [[ $line == uri_reachable=true ]]; then
+                SOME_REACHABLE=true
+              fi
+              if [[ $line == avatar_reachable=false ]]; then
+                ALL_REACHABLE=false
+              elif [[ $line == avatar_reachable=true ]]; then
+                SOME_REACHABLE=true
+              fi
+            done
+            
+            # Remove URL tags
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部可达 -X DELETE || true
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/部分URL不可达 -X DELETE || true
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部不可达 -X DELETE || true
+            
+            if [ "$ALL_REACHABLE" = true ]; then
+              # Add URL全部可达 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部可达" -f color="#4CAF50"
+              # Add 验证网站所有权 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="验证网站所有权" -f color="#2196F3"
+              # Comment on PR
+              gh pr comment ${{ github.event.issue.number }} --body "URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
+            else
+              if [ "$SOME_REACHABLE" = true ]; then
+                # Add 部分URL不可达 tag
+                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="部分URL不可达" -f color="#FF9800"
+              else
+                # Add URL全部不可达 tag
+                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部不可达" -f color="#F44336"
+              fi
+              # Comment on PR
+              gh pr comment ${{ github.event.issue.number }} --body "URL验证仍然失败，请继续修改。修改完成后请回复‘准备完毕’。"
+            fi
+          elif [ -n "$HAS_OWNERSHIP_TAG" ]; then
+            # Validate backlink
+            CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+            BACKLINK_FOUND=false
+            
+            for FILE in $CHANGED_FILES; do
+              python3 -c "
+import ast
+import requests
+
+# Read the file
+with open('$FILE', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# Execute the file to get DATA
+namespace = {}
+exec(content, namespace)
+data = namespace.get('DATA', {})
+
+# Check backlink
+try:
+    response = requests.get(data['uri'], timeout=10)
+    response.raise_for_status()
+    content = response.text
+    if 'https://waterspo.top' in content or 'https://www.waterspo.top' in content:
+        print('BACKLINK_FOUND=true')
+    else:
+        print('BACKLINK_FOUND=false')
+except Exception as e:
+    print(f'Error checking backlink: {e}')
+    print('BACKLINK_FOUND=false')
+"
+            done | while read line; do
+              if [[ $line == BACKLINK_FOUND=true ]]; then
+                BACKLINK_FOUND=true
+                break
+              fi
+            done
+            
+            if [ "$BACKLINK_FOUND" = true ]; then
+              # Remove 验证网站所有权 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/验证网站所有权 -X DELETE
+              # Add 所有权已验证 tag
+              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="所有权已验证" -f color="#4CAF50"
+              # Auto-merge PR
+              gh pr merge ${{ github.event.issue.number }} --auto --squash
+              # Comment on PR
+              gh pr comment ${{ github.event.issue.number }} --body "网站所有权验证通过，PR已自动合并。"
+            else
+              # Comment on PR
+              gh pr comment ${{ github.event.issue.number }} --body "未检测到指向 https://waterspo.top 或 https://www.waterspo.top 的链接，请添加后再次回复‘准备完毕’。"
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
