@@ -15,6 +15,9 @@ jobs:
   check-pr:
     if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+    environment: PAT
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +38,7 @@ jobs:
         if: steps.check-changes.outputs.changed == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -129,7 +132,7 @@ jobs:
         if: steps.validate-structure.outputs.valid == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -147,7 +150,7 @@ jobs:
         if: steps.validate-structure.outputs.valid == 'false'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -165,7 +168,7 @@ jobs:
         if: steps.validate-structure.outputs.valid == 'false'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -273,7 +276,7 @@ jobs:
         if: steps.validate-structure.outputs.valid == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -286,7 +289,7 @@ jobs:
         if: steps.validate-urls.outputs.status == 'all_reachable'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -298,7 +301,7 @@ jobs:
         if: steps.validate-urls.outputs.status == 'some_reachable'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -310,7 +313,7 @@ jobs:
         if: steps.validate-urls.outputs.status == 'none_reachable'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -322,7 +325,7 @@ jobs:
         if: steps.validate-urls.outputs.status != 'all_reachable'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
@@ -365,7 +368,8 @@ jobs:
       - name: Check if comment is from PR author
         id: check-author
         run: |
-          PR_AUTHOR=$(gh pr view ${{ github.event.issue.number }} --json author --jq '.author.login')
+          PR_NUMBER=${{ github.event.issue.number }}
+          PR_AUTHOR=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.user.login')
           COMMENT_AUTHOR=${{ github.event.comment.user.login }}
           if [ "$PR_AUTHOR" = "$COMMENT_AUTHOR" ]; then
             echo "is_author=true" >> $GITHUB_OUTPUT
@@ -379,7 +383,9 @@ jobs:
         if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '已修改' }}
         run: |
           # Re-run file structure validation
-          CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+          PR_NUMBER=${{ github.event.issue.number }}
+          BASE_REF=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.base.ref')
+          CHANGED_FILES=$(git diff --name-only origin/${BASE_REF}...HEAD | grep "^src/data/" | grep -v "__init__.py")
           if [ -n "$CHANGED_FILES" ]; then
             VALID=true
             for FILE in $CHANGED_FILES; do
@@ -566,12 +572,15 @@ jobs:
         if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '准备完毕' }}
         run: |
           # Check if this is for URL validation or ownership validation
-          HAS_URL_TAGS=$(gh pr view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' | grep -E "部分URL不可达|URL全部不可达")
-          HAS_OWNERSHIP_TAG=$(gh pr view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' | grep "验证网站所有权")
+          PR_NUMBER=${{ github.event.issue.number }}
+          HAS_URL_TAGS=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.labels[].name' | grep -E "部分URL不可达|URL全部可达" || true)
+          HAS_OWNERSHIP_TAG=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.labels[].name' | grep "验证网站所有权" || true)
           
           if [ -n "$HAS_URL_TAGS" ]; then
             # Re-validate URLs
-            CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+            PR_NUMBER=${{ github.event.issue.number }}
+            BASE_REF=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.base.ref')
+            CHANGED_FILES=$(git diff --name-only origin/${BASE_REF}...HEAD | grep "^src/data/" | grep -v "__init__.py")
             ALL_REACHABLE=true
             SOME_REACHABLE=false
             
@@ -654,7 +663,9 @@ jobs:
             fi
           elif [ -n "$HAS_OWNERSHIP_TAG" ]; then
             # Validate backlink
-            CHANGED_FILES=$(git diff --name-only origin/$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')...HEAD | grep "^src/data/" | grep -v "__init__.py")
+            PR_NUMBER=${{ github.event.issue.number }}
+            BASE_REF=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}" | jq -r '.base.ref')
+            CHANGED_FILES=$(git diff --name-only origin/${BASE_REF}...HEAD | grep "^src/data/" | grep -v "__init__.py")
             BACKLINK_FOUND=false
             
             for FILE in $CHANGED_FILES; do
