@@ -37,7 +37,7 @@ jobs:
           gh label create "友链申请中" --color "FF9800" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "友链申请中"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Install dependencies
         if: steps.check-changes.outputs.changed == 'true'
@@ -121,7 +121,7 @@ jobs:
           gh label create "文件结构符合" --color "4CAF50" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构符合"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add 文件结构不一致 tag
         if: steps.validate-structure.outputs.valid == 'false'
@@ -129,14 +129,14 @@ jobs:
           gh label create "文件结构不一致" --color "F44336" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构不一致"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about file structure
         if: steps.validate-structure.outputs.valid == 'false'
         run: |
           gh pr comment ${{ github.event.pull_request.number }} --body "文件结构不一致，请修改文件结构以符合要求。修改完成后请回复‘已修改’。"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Update PR title
         if: steps.validate-structure.outputs.valid == 'true'
@@ -167,7 +167,7 @@ jobs:
             "
           done
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Validate URLs
         if: steps.validate-structure.outputs.valid == 'true'
@@ -241,7 +241,7 @@ jobs:
           gh issue edit ${{ github.event.pull_request.number }} --remove-label "部分URL不可达" || true
           gh issue edit ${{ github.event.pull_request.number }} --remove-label "URL全部不可达" || true
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add URL全部可达 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
@@ -249,7 +249,7 @@ jobs:
           gh label create "URL全部可达" --color "4CAF50" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部可达"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add 部分URL不可达 tag
         if: steps.validate-urls.outputs.status == 'some_reachable'
@@ -257,7 +257,7 @@ jobs:
           gh label create "部分URL不可达" --color "FF9800" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "部分URL不可达"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add URL全部不可达 tag
         if: steps.validate-urls.outputs.status == 'none_reachable'
@@ -265,14 +265,14 @@ jobs:
           gh label create "URL全部不可达" --color "F44336" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部不可达"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about URL validation
         if: steps.validate-urls.outputs.status != 'all_reachable'
         run: |
           gh pr comment ${{ github.event.pull_request.number }} --body "URL验证失败，请检查并修改URL。修改完成后请回复‘准备完毕’。"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add 验证网站所有权 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
@@ -280,14 +280,14 @@ jobs:
           gh label create "验证网站所有权" --color "2196F3" --force || true
           gh issue edit ${{ github.event.pull_request.number }} --add-label "验证网站所有权"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about ownership validation
         if: steps.validate-urls.outputs.status == 'all_reachable'
         run: |
           gh pr comment ${{ github.event.pull_request.number }} --body "请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   
   handle-comment:
     if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request }}
@@ -308,7 +308,7 @@ jobs:
             echo "is_author=false" >> $GITHUB_OUTPUT
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Handle 已修改 comment
         if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '已修改' }}
@@ -485,7 +485,7 @@ jobs:
             fi
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Handle 准备完毕 comment
         if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '准备完毕' }}
@@ -626,4 +626,4 @@ jobs:
             fi
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
