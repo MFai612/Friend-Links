@@ -33,11 +33,21 @@ jobs:
       
       - name: Add 友链申请中 tag
         if: steps.check-changes.outputs.changed == 'true'
-        run: |
-          gh label create "友链申请中" --color "FF9800" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "友链申请中"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: '友链申请中' })
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({ owner, repo, name: '友链申请中', color: 'FF9800' })
+              } else throw e
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['友链申请中'] })
       
       - name: Install dependencies
         if: steps.check-changes.outputs.changed == 'true'
@@ -117,26 +127,51 @@ jobs:
       
       - name: Add 文件结构符合 tag
         if: steps.validate-structure.outputs.valid == 'true'
-        run: |
-          gh label create "文件结构符合" --color "4CAF50" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构符合"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: '文件结构符合' })
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({ owner, repo, name: '文件结构符合', color: '4CAF50' })
+              } else throw e
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['文件结构符合'] })
       
       - name: Add 文件结构不一致 tag
         if: steps.validate-structure.outputs.valid == 'false'
-        run: |
-          gh label create "文件结构不一致" --color "F44336" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构不一致"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: '文件结构不一致' })
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({ owner, repo, name: '文件结构不一致', color: 'F44336' })
+              } else throw e
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['文件结构不一致'] })
       
       - name: Comment on PR about file structure
         if: steps.validate-structure.outputs.valid == 'false'
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "文件结构不一致，请修改文件结构以符合要求。修改完成后请回复‘已修改’。"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            const body = '文件结构不一致，请修改文件结构以符合要求。修改完成后请回复\'已修改\'.'
+            await github.rest.issues.createComment({ owner, repo, issue_number, body })
       
       - name: Update PR title
         if: steps.validate-structure.outputs.valid == 'true'
@@ -236,58 +271,88 @@ jobs:
       
       - name: Remove URL tags
         if: steps.validate-structure.outputs.valid == 'true'
-        run: |
-          gh issue edit ${{ github.event.pull_request.number }} --remove-label "URL全部可达" || true
-          gh issue edit ${{ github.event.pull_request.number }} --remove-label "部分URL不可达" || true
-          gh issue edit ${{ github.event.pull_request.number }} --remove-label "URL全部不可达" || true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            for (const name of ['URL全部可达', '部分URL不可达', 'URL全部不可达']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name }) } catch (e) { if (e.status !== 404) throw e }
+            }
       
       - name: Add URL全部可达 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
-        run: |
-          gh label create "URL全部可达" --color "4CAF50" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部可达"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try { await github.rest.issues.getLabel({ owner, repo, name: 'URL全部可达' }) } catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name: 'URL全部可达', color: '4CAF50' }); else throw e }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['URL全部可达'] })
       
       - name: Add 部分URL不可达 tag
         if: steps.validate-urls.outputs.status == 'some_reachable'
-        run: |
-          gh label create "部分URL不可达" --color "FF9800" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "部分URL不可达"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try { await github.rest.issues.getLabel({ owner, repo, name: '部分URL不可达' }) } catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name: '部分URL不可达', color: 'FF9800' }); else throw e }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['部分URL不可达'] })
       
       - name: Add URL全部不可达 tag
         if: steps.validate-urls.outputs.status == 'none_reachable'
-        run: |
-          gh label create "URL全部不可达" --color "F44336" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部不可达"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try { await github.rest.issues.getLabel({ owner, repo, name: 'URL全部不可达' }) } catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name: 'URL全部不可达', color: 'F44336' }); else throw e }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['URL全部不可达'] })
       
       - name: Comment on PR about URL validation
         if: steps.validate-urls.outputs.status != 'all_reachable'
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "URL验证失败，请检查并修改URL。修改完成后请回复‘准备完毕’。"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            const body = 'URL验证失败，请检查并修改URL。修改完成后请回复\'准备完毕\'.'
+            await github.rest.issues.createComment({ owner, repo, issue_number, body })
       
       - name: Add 验证网站所有权 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
-        run: |
-          gh label create "验证网站所有权" --color "2196F3" --force || true
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "验证网站所有权"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            try { await github.rest.issues.getLabel({ owner, repo, name: '验证网站所有权' }) } catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name: '验证网站所有权', color: '2196F3' }); else throw e }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['验证网站所有权'] })
       
       - name: Comment on PR about ownership validation
         if: steps.validate-urls.outputs.status == 'all_reachable'
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.pull_request.number
+            const body = '请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复\'准备完毕\'以验证网站所有权。'
+            await github.rest.issues.createComment({ owner, repo, issue_number, body })
   
   handle-comment:
     if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request }}
@@ -375,9 +440,14 @@ jobs:
             
             if [ "$VALID" = true ]; then
               # Remove 文件结构不一致 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/文件结构不一致 -X DELETE
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              # Remove 文件结构不一致
+              LABEL_ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('文件结构不一致', safe=''))")
+              curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/labels/${LABEL_ENC}" || true
               # Add 文件结构符合 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="文件结构符合" -f color="#4CAF50"
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"文件结构符合","color":"4CAF50"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"labels":["文件结构符合"]}' "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/labels"
               # Update PR title
               for FILE in $CHANGED_FILES; do
                 python3 -c "
@@ -457,31 +527,36 @@ jobs:
               done
               
               # Remove URL tags
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部可达 -X DELETE || true
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/部分URL不可达 -X DELETE || true
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部不可达 -X DELETE || true
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              for l in "URL全部可达" "部分URL不可达" "URL全部不可达"; do
+                ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$l', safe=''))")
+                curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/labels/${ENC}" || true
+              done
               
               if [ "$ALL_REACHABLE" = true ]; then
-                # Add URL全部可达 tag
-                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部可达" -f color="#4CAF50"
-                # Add 验证网站所有权 tag
-                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="验证网站所有权" -f color="#2196F3"
-                # Comment on PR
-                gh pr comment ${{ github.event.issue.number }} --body "文件结构验证通过，URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
+                OWNER=${GITHUB_REPOSITORY%%/*}
+                REPO=${GITHUB_REPOSITORY##*/}
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"URL全部可达","color":"4CAF50"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"验证网站所有权","color":"2196F3"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+                BODY=$(python3 -c "import json; print(json.dumps('文件结构验证通过，URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复\'准备完毕\'以验证网站所有权。'))")
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
               else
                 if [ "$SOME_REACHABLE" = true ]; then
-                  # Add 部分URL不可达 tag
-                  gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="部分URL不可达" -f color="#FF9800"
+                  OWNER=${GITHUB_REPOSITORY%%/*}
+                  REPO=${GITHUB_REPOSITORY##*/}
+                  curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"部分URL不可达","color":"FF9800"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
                 else
-                  # Add URL全部不可达 tag
-                  gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部不可达" -f color="#F44336"
+                  OWNER=${GITHUB_REPOSITORY%%/*}
+                  REPO=${GITHUB_REPOSITORY##*/}
+                  curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"URL全部不可达","color":"F44336"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
                 fi
-                # Comment on PR
-                gh pr comment ${{ github.event.issue.number }} --body "文件结构验证通过，但URL验证失败，请检查并修改URL。修改完成后请回复‘准备完毕’。"
+                BODY=$(python3 -c "import json; print(json.dumps('文件结构验证通过，但URL验证失败，请检查并修改URL。修改完成后请回复\'准备完毕\'.'))")
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
               fi
             else
-              # Comment on PR
-              gh pr comment ${{ github.event.issue.number }} --body "文件结构仍然不一致，请继续修改。修改完成后请回复‘已修改’。"
+              BODY=$(python3 -c "import json; print(json.dumps('文件结构仍然不一致，请继续修改。修改完成后请回复\'已修改\'.'))")
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
             fi
           fi
         env:
@@ -550,27 +625,32 @@ jobs:
             done
             
             # Remove URL tags
-            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部可达 -X DELETE || true
-            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/部分URL不可达 -X DELETE || true
-            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/URL全部不可达 -X DELETE || true
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              for l in "URL全部可达" "部分URL不可达" "URL全部不可达"; do
+                ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$l', safe=''))")
+                curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/labels/${ENC}" || true
+              done
             
             if [ "$ALL_REACHABLE" = true ]; then
-              # Add URL全部可达 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部可达" -f color="#4CAF50"
-              # Add 验证网站所有权 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="验证网站所有权" -f color="#2196F3"
-              # Comment on PR
-              gh pr comment ${{ github.event.issue.number }} --body "URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复‘准备完毕’以验证网站所有权。"
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"URL全部可达","color":"4CAF50"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"验证网站所有权","color":"2196F3"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+              BODY=$(python3 -c "import json; print(json.dumps('URL验证通过。请在您的网站上添加指向 https://waterspo.top 或 https://www.waterspo.top 的链接，然后回复\'准备完毕\'以验证网站所有权。'))")
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
             else
               if [ "$SOME_REACHABLE" = true ]; then
-                # Add 部分URL不可达 tag
-                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="部分URL不可达" -f color="#FF9800"
+                OWNER=${GITHUB_REPOSITORY%%/*}
+                REPO=${GITHUB_REPOSITORY##*/}
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"部分URL不可达","color":"FF9800"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
               else
-                # Add URL全部不可达 tag
-                gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="URL全部不可达" -f color="#F44336"
+                OWNER=${GITHUB_REPOSITORY%%/*}
+                REPO=${GITHUB_REPOSITORY##*/}
+                curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"URL全部不可达","color":"F44336"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
               fi
-              # Comment on PR
-              gh pr comment ${{ github.event.issue.number }} --body "URL验证仍然失败，请继续修改。修改完成后请回复‘准备完毕’。"
+              BODY=$(python3 -c "import json; print(json.dumps('URL验证仍然失败，请继续修改。修改完成后请回复\'准备完毕\'.'))")
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
             fi
           elif [ -n "$HAS_OWNERSHIP_TAG" ]; then
             # Validate backlink
@@ -612,17 +692,20 @@ jobs:
             done
             
             if [ "$BACKLINK_FOUND" = true ]; then
-              # Remove 验证网站所有权 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels/验证网站所有权 -X DELETE
-              # Add 所有权已验证 tag
-              gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/labels -X POST -f name="所有权已验证" -f color="#4CAF50"
-              # Auto-merge PR
-              gh pr merge ${{ github.event.issue.number }} --auto --squash
-              # Comment on PR
-              gh pr comment ${{ github.event.issue.number }} --body "网站所有权验证通过，PR已自动合并。"
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('验证网站所有权', safe=''))")
+              curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/labels/${ENC}" || true
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"name":"所有权已验证","color":"4CAF50"}' "https://api.github.com/repos/${OWNER}/${REPO}/labels" || true
+              # Auto-merge PR (squash)
+              curl -sS -X PUT -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d '{"merge_method":"squash"}' "https://api.github.com/repos/${OWNER}/${REPO}/pulls/${{ github.event.issue.number }}/merge" || true
+              BODY=$(python3 -c "import json; print(json.dumps('网站所有权验证通过，PR已自动合并。'))")
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
             else
-              # Comment on PR
-              gh pr comment ${{ github.event.issue.number }} --body "未检测到指向 https://waterspo.top 或 https://www.waterspo.top 的链接，请添加后再次回复‘准备完毕’。"
+              OWNER=${GITHUB_REPOSITORY%%/*}
+              REPO=${GITHUB_REPOSITORY##*/}
+              BODY=$(python3 -c "import json; print(json.dumps('未检测到指向 https://waterspo.top 或 https://www.waterspo.top 的链接，请添加后再次回复\'准备完毕\'.'))")
+              curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -d "{\"body\":${BODY}}" "https://api.github.com/repos/${OWNER}/${REPO}/issues/${{ github.event.issue.number }}/comments"
             fi
           fi
         env:
