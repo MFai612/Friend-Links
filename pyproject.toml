@@ -1,0 +1,20 @@
+[project]
+name = "friend-links"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "webtypy>=0.1.7",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["data/*.json"]
+
+[dependency-groups]
+dev = [
+    "workers-py"
+]
