@@ -1,14 +1,19 @@
 name: PR Check
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
 
 jobs:
   check-pr:
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
