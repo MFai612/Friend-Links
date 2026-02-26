@@ -28,12 +28,11 @@ jobs:
       
       - name: Add 友链申请中 tag
         if: steps.check-changes.outputs.changed == 'true'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 友链申请中
-          color: "#FF9800"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "友链申请中" --color "FF9800" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "友链申请中"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Install dependencies
         if: steps.check-changes.outputs.changed == 'true'
@@ -113,21 +112,19 @@ jobs:
       
       - name: Add 文件结构符合 tag
         if: steps.validate-structure.outputs.valid == 'true'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 文件结构符合
-          color: "#4CAF50"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "文件结构符合" --color "4CAF50" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构符合"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add 文件结构不一致 tag
         if: steps.validate-structure.outputs.valid == 'false'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 文件结构不一致
-          color: "#F44336"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "文件结构不一致" --color "F44336" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "文件结构不一致"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about file structure
         if: steps.validate-structure.outputs.valid == 'false'
@@ -234,57 +231,36 @@ jobs:
       
       - name: Remove URL tags
         if: steps.validate-structure.outputs.valid == 'true'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: URL全部可达
-          remove: true
-          issue-number: ${{ github.event.pull_request.number }}
-      
-      - name: Remove URL tags
-        if: steps.validate-structure.outputs.valid == 'true'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 部分URL不可达
-          remove: true
-          issue-number: ${{ github.event.pull_request.number }}
-      
-      - name: Remove URL tags
-        if: steps.validate-structure.outputs.valid == 'true'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: URL全部不可达
-          remove: true
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh issue edit ${{ github.event.pull_request.number }} --remove-label "URL全部可达" || true
+          gh issue edit ${{ github.event.pull_request.number }} --remove-label "部分URL不可达" || true
+          gh issue edit ${{ github.event.pull_request.number }} --remove-label "URL全部不可达" || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add URL全部可达 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: URL全部可达
-          color: "#4CAF50"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "URL全部可达" --color "4CAF50" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部可达"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add 部分URL不可达 tag
         if: steps.validate-urls.outputs.status == 'some_reachable'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 部分URL不可达
-          color: "#FF9800"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "部分URL不可达" --color "FF9800" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "部分URL不可达"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Add URL全部不可达 tag
         if: steps.validate-urls.outputs.status == 'none_reachable'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: URL全部不可达
-          color: "#F44336"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "URL全部不可达" --color "F44336" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "URL全部不可达"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about URL validation
         if: steps.validate-urls.outputs.status != 'all_reachable'
@@ -295,12 +271,11 @@ jobs:
       
       - name: Add 验证网站所有权 tag
         if: steps.validate-urls.outputs.status == 'all_reachable'
-        uses: actions-gh-pages/label-action@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label: 验证网站所有权
-          color: "#2196F3"
-          issue-number: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "验证网站所有权" --color "2196F3" --force || true
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "验证网站所有权"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Comment on PR about ownership validation
         if: steps.validate-urls.outputs.status == 'all_reachable'
