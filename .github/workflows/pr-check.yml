@@ -181,31 +181,25 @@ jobs:
         run: |
           CHANGED_FILES=$(echo "${{ steps.check-changes.outputs.files }}")
           for FILE in $CHANGED_FILES; do
-            python3 -c "
-          import ast
-          import os
-          import subprocess
-
-          # Read the file
-          with open('$FILE', 'r', encoding='utf-8') as f:
-              content = f.read()
-
-          # Execute the file to get DATA
-          namespace = {}
-          exec(content, namespace)
-          data = namespace.get('DATA', {})
-
-          # Update PR title
-          pr_title = f'友链：{data["name"]}'
-          subprocess.run([
-              'gh', 'pr', 'edit', '${{ github.event.pull_request.number }}', 
-              '--title', pr_title
-          ], env=os.environ)
-          print(f'Updated PR title to: {pr_title}')
-            "
+            PR_TITLE_JSON=$(python3 - <<'PY' "$FILE"
+            import ast,sys,json
+            file=sys.argv[1]
+            with open(file,'r',encoding='utf-8') as f:
+              content=f.read()
+            namespace={}
+            exec(content,namespace)
+            data=namespace.get('DATA',{})
+            title='友链：' + data.get('name','')
+            print(json.dumps(title))
+            PY
+            "$FILE")
+            PR_TITLE=$(echo "$PR_TITLE_JSON" | sed -e 's/^"//' -e 's/"$//' -e 's/\\"/"/g')
+            curl -sS -X PATCH -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+              -d "{\"title\": \"${PR_TITLE}\"}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}"
+            echo "Updated PR title to: ${PR_TITLE}"
           done
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
       
       - name: Validate URLs
         if: steps.validate-structure.outputs.valid == 'true'
@@ -566,7 +560,7 @@ jobs:
             fi
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
       
       - name: Handle 准备完毕 comment
         if: ${{ steps.check-author.outputs.is_author == 'true' && github.event.comment.body == '准备完毕' }}
