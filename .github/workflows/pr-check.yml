@@ -56,49 +56,49 @@ jobs:
             fi
             
             python3 -c "
-import ast
+          import ast
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Parse the file
-module = ast.parse(content)
+          # Parse the file
+          module = ast.parse(content)
 
-# Check if DATA variable exists
-found_data = False
-for node in ast.walk(module):
-    if isinstance(node, ast.Assign):
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == 'DATA':
-                found_data = True
-                break
-    if found_data:
-        break
+          # Check if DATA variable exists
+          found_data = False
+          for node in ast.walk(module):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'DATA':
+                          found_data = True
+                          break
+              if found_data:
+                  break
 
-if not found_data:
-    print('Error: DATA variable not found')
-    exit(1)
+          if not found_data:
+              print('Error: DATA variable not found')
+              exit(1)
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Check required fields
-required_fields = ['name', 'description', 'uri']
-for field in required_fields:
-    if field not in data:
-        print(f'Error: Missing required field: {field}')
-        exit(1)
+          # Check required fields
+          required_fields = ['name', 'description', 'uri']
+          for field in required_fields:
+              if field not in data:
+                  print(f'Error: Missing required field: {field}')
+                  exit(1)
 
-# Check optional fields
-optional_fields = ['avatar_uri']
-for field in data:
-    if field not in required_fields and field not in optional_fields:
-        print(f'Error: Unexpected field: {field}')
-        exit(1)
-"
+          # Check optional fields
+          optional_fields = ['avatar_uri']
+          for field in data:
+              if field not in required_fields and field not in optional_fields:
+                  print(f'Error: Unexpected field: {field}')
+                  exit(1)
+            "
             if [ $? -ne 0 ]; then
               VALID=false
               break
@@ -142,27 +142,27 @@ for field in data:
           CHANGED_FILES=$(echo "${{ steps.check-changes.outputs.files }}")
           for FILE in $CHANGED_FILES; do
             python3 -c "
-import ast
-import os
-import subprocess
+          import ast
+          import os
+          import subprocess
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Update PR title
-pr_title = f'友链：{data["name"]}'
-subprocess.run([
-    'gh', 'pr', 'edit', '${{ github.event.pull_request.number }}', 
-    '--title', pr_title
-], env=os.environ)
-print(f'Updated PR title to: {pr_title}')
-"
+          # Update PR title
+          pr_title = f'友链：{data["name"]}'
+          subprocess.run([
+              'gh', 'pr', 'edit', '${{ github.event.pull_request.number }}', 
+              '--title', pr_title
+          ], env=os.environ)
+          print(f'Updated PR title to: {pr_title}')
+            "
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -177,40 +177,40 @@ print(f'Updated PR title to: {pr_title}')
           
           for FILE in $CHANGED_FILES; do
             python3 -c "
-import ast
-import requests
+          import ast
+          import requests
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Validate URI
-uri_reachable = False
-try:
-    response = requests.head(data['uri'], timeout=10)
-    response.raise_for_status()
-    uri_reachable = True
-except Exception as e:
-    print(f'URI not reachable: {e}')
+          # Validate URI
+          uri_reachable = False
+          try:
+              response = requests.head(data['uri'], timeout=10)
+              response.raise_for_status()
+              uri_reachable = True
+          except Exception as e:
+              print(f'URI not reachable: {e}')
 
-# Validate avatar_uri if present
-avatar_reachable = True
-if 'avatar_uri' in data:
-    try:
-        response = requests.head(data['avatar_uri'], timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        print(f'avatar_uri not reachable: {e}')
-        avatar_reachable = False
+          # Validate avatar_uri if present
+          avatar_reachable = True
+          if 'avatar_uri' in data:
+              try:
+                  response = requests.head(data['avatar_uri'], timeout=10)
+                  response.raise_for_status()
+              except Exception as e:
+                  print(f'avatar_uri not reachable: {e}')
+                  avatar_reachable = False
 
-print(f'uri_reachable={uri_reachable}')
-print(f'avatar_reachable={avatar_reachable}')
-"
+          print(f'uri_reachable={uri_reachable}')
+          print(f'avatar_reachable={avatar_reachable}')
+            "
           done | while read line; do
             if [[ $line == uri_reachable=false ]]; then
               ALL_REACHABLE=false
@@ -344,49 +344,49 @@ print(f'avatar_reachable={avatar_reachable}')
               fi
               
               python3 -c "
-import ast
+          import ast
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Parse the file
-module = ast.parse(content)
+          # Parse the file
+          module = ast.parse(content)
 
-# Check if DATA variable exists
-found_data = False
-for node in ast.walk(module):
-    if isinstance(node, ast.Assign):
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == 'DATA':
-                found_data = True
-                break
-    if found_data:
-        break
+          # Check if DATA variable exists
+          found_data = False
+          for node in ast.walk(module):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'DATA':
+                          found_data = True
+                          break
+              if found_data:
+                  break
 
-if not found_data:
-    print('Error: DATA variable not found')
-    exit(1)
+          if not found_data:
+              print('Error: DATA variable not found')
+              exit(1)
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Check required fields
-required_fields = ['name', 'description', 'uri']
-for field in required_fields:
-    if field not in data:
-        print(f'Error: Missing required field: {field}')
-        exit(1)
+          # Check required fields
+          required_fields = ['name', 'description', 'uri']
+          for field in required_fields:
+              if field not in data:
+                  print(f'Error: Missing required field: {field}')
+                  exit(1)
 
-# Check optional fields
-optional_fields = ['avatar_uri']
-for field in data:
-    if field not in required_fields and field not in optional_fields:
-        print(f'Error: Unexpected field: {field}')
-        exit(1)
-"
+          # Check optional fields
+          optional_fields = ['avatar_uri']
+          for field in data:
+              if field not in required_fields and field not in optional_fields:
+                  print(f'Error: Unexpected field: {field}')
+                  exit(1)
+            "
               if [ $? -ne 0 ]; then
                 VALID=false
                 break
@@ -401,27 +401,27 @@ for field in data:
               # Update PR title
               for FILE in $CHANGED_FILES; do
                 python3 -c "
-import ast
-import os
-import subprocess
+          import ast
+          import os
+          import subprocess
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Update PR title
-pr_title = f'友链：{data["name"]}'
-subprocess.run([
-    'gh', 'pr', 'edit', '${{ github.event.issue.number }}', 
-    '--title', pr_title
-], env=os.environ)
-print(f'Updated PR title to: {pr_title}')
-"
+          # Update PR title
+          pr_title = f'友链：{data["name"]}'
+          subprocess.run([
+              'gh', 'pr', 'edit', '${{ github.event.issue.number }}', 
+              '--title', pr_title
+          ], env=os.environ)
+          print(f'Updated PR title to: {pr_title}')
+            "
               done
               # Validate URLs
               ALL_REACHABLE=true
@@ -429,40 +429,40 @@ print(f'Updated PR title to: {pr_title}')
               
               for FILE in $CHANGED_FILES; do
                 python3 -c "
-import ast
-import requests
+          import ast
+          import requests
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Validate URI
-uri_reachable = False
-try:
-    response = requests.head(data['uri'], timeout=10)
-    response.raise_for_status()
-    uri_reachable = True
-except Exception as e:
-    print(f'URI not reachable: {e}')
+          # Validate URI
+          uri_reachable = False
+          try:
+              response = requests.head(data['uri'], timeout=10)
+              response.raise_for_status()
+              uri_reachable = True
+          except Exception as e:
+              print(f'URI not reachable: {e}')
 
-# Validate avatar_uri if present
-avatar_reachable = True
-if 'avatar_uri' in data:
-    try:
-        response = requests.head(data['avatar_uri'], timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        print(f'avatar_uri not reachable: {e}')
-        avatar_reachable = False
+          # Validate avatar_uri if present
+          avatar_reachable = True
+          if 'avatar_uri' in data:
+              try:
+                  response = requests.head(data['avatar_uri'], timeout=10)
+                  response.raise_for_status()
+              except Exception as e:
+                  print(f'avatar_uri not reachable: {e}')
+                  avatar_reachable = False
 
-print(f'uri_reachable={uri_reachable}')
-print(f'avatar_reachable={avatar_reachable}')
-"
+          print(f'uri_reachable={uri_reachable}')
+          print(f'avatar_reachable={avatar_reachable}')
+            "
               done | while read line; do
                 if [[ $line == uri_reachable=false ]]; then
                   ALL_REACHABLE=false
@@ -522,40 +522,40 @@ print(f'avatar_reachable={avatar_reachable}')
             
             for FILE in $CHANGED_FILES; do
               python3 -c "
-import ast
-import requests
+          import ast
+          import requests
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Validate URI
-uri_reachable = False
-try:
-    response = requests.head(data['uri'], timeout=10)
-    response.raise_for_status()
-    uri_reachable = True
-except Exception as e:
-    print(f'URI not reachable: {e}')
+          # Validate URI
+          uri_reachable = False
+          try:
+              response = requests.head(data['uri'], timeout=10)
+              response.raise_for_status()
+              uri_reachable = True
+          except Exception as e:
+              print(f'URI not reachable: {e}')
 
-# Validate avatar_uri if present
-avatar_reachable = True
-if 'avatar_uri' in data:
-    try:
-        response = requests.head(data['avatar_uri'], timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        print(f'avatar_uri not reachable: {e}')
-        avatar_reachable = False
+          # Validate avatar_uri if present
+          avatar_reachable = True
+          if 'avatar_uri' in data:
+              try:
+                  response = requests.head(data['avatar_uri'], timeout=10)
+                  response.raise_for_status()
+              except Exception as e:
+                  print(f'avatar_uri not reachable: {e}')
+                  avatar_reachable = False
 
-print(f'uri_reachable={uri_reachable}')
-print(f'avatar_reachable={avatar_reachable}')
-"
+          print(f'uri_reachable={uri_reachable}')
+          print(f'avatar_reachable={avatar_reachable}')
+            "
             done | while read line; do
               if [[ $line == uri_reachable=false ]]; then
                 ALL_REACHABLE=false
@@ -599,31 +599,31 @@ print(f'avatar_reachable={avatar_reachable}')
             
             for FILE in $CHANGED_FILES; do
               python3 -c "
-import ast
-import requests
+          import ast
+          import requests
 
-# Read the file
-with open('$FILE', 'r', encoding='utf-8') as f:
-    content = f.read()
+          # Read the file
+          with open('$FILE', 'r', encoding='utf-8') as f:
+              content = f.read()
 
-# Execute the file to get DATA
-namespace = {}
-exec(content, namespace)
-data = namespace.get('DATA', {})
+          # Execute the file to get DATA
+          namespace = {}
+          exec(content, namespace)
+          data = namespace.get('DATA', {})
 
-# Check backlink
-try:
-    response = requests.get(data['uri'], timeout=10)
-    response.raise_for_status()
-    content = response.text
-    if 'https://waterspo.top' in content or 'https://www.waterspo.top' in content:
-        print('BACKLINK_FOUND=true')
-    else:
-        print('BACKLINK_FOUND=false')
-except Exception as e:
-    print(f'Error checking backlink: {e}')
-    print('BACKLINK_FOUND=false')
-"
+          # Check backlink
+          try:
+              response = requests.get(data['uri'], timeout=10)
+              response.raise_for_status()
+              content = response.text
+              if 'https://waterspo.top' in content or 'https://www.waterspo.top' in content:
+                  print('BACKLINK_FOUND=true')
+              else:
+                  print('BACKLINK_FOUND=false')
+          except Exception as e:
+              print(f'Error checking backlink: {e}')
+              print('BACKLINK_FOUND=false')
+            "
             done | while read line; do
               if [[ $line == BACKLINK_FOUND=true ]]; then
                 BACKLINK_FOUND=true
