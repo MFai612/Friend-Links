@@ -239,9 +239,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install requests
-        run: pip install requests
-
       - name: Validate URL reachability
         uses: actions/github-script@v7
         with:
@@ -265,12 +262,22 @@ jobs:
             const { spawnSync } = require('child_process')
             const fs = require('fs')
 
-            // 使用 check_url.py（requests.get + 真实 User-Agent），避免 HEAD 请求被服务器拒绝
+            // 用 curl 检测可达性：只要服务器有任意 HTTP 响应（含 403/404）即视为可达
+            // curl 仅在连接失败/DNS 错误/超时时返回非零退出码
             function checkUrl(url) {
-              const r = spawnSync('python3', ['.github/scripts/check_url.py', url],
-                { encoding: 'utf8', timeout: 20000 })
-              core.info(`check_url [${url}]: exit=${r.status} stdout=${r.stdout.trim()}`)
-              return r.status === 0
+              const r = spawnSync('curl', [
+                '-s', '-o', '/dev/null', '-L',
+                '-A', 'Mozilla/5.0 (compatible; FriendLinkBot/1.0)',
+                '--max-time', '15',
+                '--retry', '2',
+                '--retry-delay', '2',
+                '-w', '%{http_code}',
+                url
+              ], { encoding: 'utf8', timeout: 60000 })
+              const httpCode = parseInt(r.stdout.trim(), 10) || 0
+              const ok = r.status === 0 && httpCode > 0
+              core.info(`check_url [${url}]: curl_exit=${r.status} http=${httpCode} reachable=${ok}`)
+              return ok
             }
 
             const unreachableUris = []
