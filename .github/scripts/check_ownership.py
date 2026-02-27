@@ -35,8 +35,7 @@ def check_ownership(uri: str, timeout: int = 10) -> tuple[bool, str]:
             allow_redirects=True,
             headers={
                 "User-Agent": (
-                    "fuwari-auto-pr/1.0 (+github actions) "
-                    "+https://github.com/MFJip612/Friend-Links)"
+                    "Apifox/1.0.0 (https://apifox.com)"
                 ),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             },
