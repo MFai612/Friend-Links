@@ -241,7 +241,6 @@ jobs:
 
   update_title:
     needs: validate_structure
-    if: needs.validate_structure.outputs.structure_valid == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 更新PR标题
@@ -312,7 +311,6 @@ jobs:
 
   validate_urls:
     needs: update_title
-    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: 验证URL可达性
