@@ -11,6 +11,10 @@ on:
         description: 'Pull request number to process'
         required: false
         default: ''
+      trigger_action:
+        description: 'Action hint: re_validate | verify_ownership'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -24,7 +28,7 @@ concurrency:
 jobs:
   # ── 1. 初步筛查：仅处理修改 src/data/*.py 的 PR ─────────────────────────────
   triage:
-    if: ${{ github.event_name == 'pull_request_target' }}
+    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -35,7 +39,9 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
 
             const LABELS = [
               '友链申请中',
@@ -53,6 +59,19 @@ jobs:
               }
             }
             for (const l of LABELS) await ensureLabel(l)
+
+            // workflow_dispatch 时跳过文件变更校验
+            if (context.eventName === 'workflow_dispatch') {
+              core.info('workflow_dispatch 触发，跳过文件变更校验')
+              return
+            }
+
+            // pull_request_target synchronize：清除可能过时的结构/URL 标签，强制重新验证
+            if (context.payload.action === 'synchronize') {
+              for (const lbl of ['文件结构符合', '文件结构不一致', 'URL全部可达', '部分URL不可达', 'URL全部不可达'])
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name: lbl }) } catch {}
+              core.info('synchronize 事件：已清除结构与 URL 标签')
+            }
 
             const files = []
             for await (const res of github.paginate.iterator(
@@ -99,8 +118,19 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
-            const ref   = context.payload.pull_request.head.sha
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
+
+            // 标签跳过逻辑：文件结构已验证且不是 re_validate 触发时跳过
+            const triggerAction = context.payload.inputs?.trigger_action || ''
+            const curIssue0 = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
+            const curLabels0 = new Set((curIssue0.data.labels || []).map(l => l.name))
+            if (curLabels0.has('文件结构符合') && triggerAction !== 're_validate') {
+              core.info('文件结构已验证，跳过'); return
+            }
 
             const dataFiles = []
             for await (const res of github.paginate.iterator(
@@ -189,8 +219,11 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
-            const ref   = context.payload.pull_request.head.sha
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
 
             const dataFiles = []
             for await (const res of github.paginate.iterator(
@@ -257,8 +290,18 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
-            const ref   = context.payload.pull_request.head.sha
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
+
+            // 标签跳过逻辑：workflow_dispatch 触发且 URL 已全部可达则跳过
+            const curIssue1 = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
+            const curLabels1 = new Set((curIssue1.data.labels || []).map(l => l.name))
+            if (context.eventName === 'workflow_dispatch' && curLabels1.has('URL全部可达')) {
+              core.info('URL 已验证可达，跳过'); return
+            }
 
             const dataFiles = []
             for await (const res of github.paginate.iterator(
@@ -341,7 +384,7 @@ jobs:
                   '',
                   lines,
                   '',
-                  '请确认链接可正常访问后，在 PR 评论回复 `准备完毕` 以重新验证。'
+                  '请修复上述 URI 后推送新的提交，工作流将自动重新验证。'
                 ].join('\n')
               })
               core.setFailed('存在不可达的 URI')
@@ -375,9 +418,15 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
-            const ref   = context.payload.pull_request.head.sha
-            const commentBody = context.payload.comment?.body || ''
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
+
+            // trigger_action === 'verify_ownership' 时执行实际验证，否则仅发送说明
+            const triggerAction = context.payload.inputs?.trigger_action || ''
+            const shouldVerify = triggerAction === 'verify_ownership'
 
             try {
             const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
@@ -431,7 +480,7 @@ jobs:
               return { ok: true, html: r.stdout }
             }
 
-            if (commentBody.includes('准备完毕')) {
+            if (shouldVerify) {
               let verified = false
               let failReason = ''
 
@@ -529,8 +578,11 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo  = context.repo.repo
-            const pull_number = context.payload.pull_request.number
-            const ref   = context.payload.pull_request.head.sha
+            const pull_number = context.payload.pull_request?.number
+              || parseInt(context.payload.inputs?.pr_number)
+            if (!pull_number) { core.info('无法确定 PR 编号，跳过'); return }
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
 
             const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
             const labels = new Set((issue.data.labels || []).map(l => l.name))
@@ -616,33 +668,32 @@ jobs:
 
             if (body.includes('已修改')) {
               try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: '文件结构不一致' }) } catch {}
-              if (!labels.has('文件结构符合'))
-                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['文件结构符合'] })
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: '文件结构符合' }) } catch {}
               await github.rest.issues.createComment({
                 owner, repo, issue_number,
                 body: '> ✅ 已处理"已修改"，将重新验证文件结构。'
               })
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner, repo, workflow_id: 'pr-check.yml', ref: 'main',
+                  inputs: { pr_number: String(issue_number), trigger_action: 're_validate' }
+                })
+                core.info('已触发 re_validate dispatch')
+              } catch (e) { core.warning(`触发主流程失败: ${e.message}`) }
             }
 
             if (body.includes('准备完毕')) {
-              for (const lbl of ['部分URL不可达', 'URL全部不可达'])
-                try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
-              if (!labels.has('URL全部可达'))
-                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['URL全部可达'] })
               for (const lbl of ['验证网站所有权', '所有权已验证'])
                 try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
               await github.rest.issues.createComment({
                 owner, repo, issue_number,
                 body: '> ✅ 已处理"准备完毕"，将重新验证所有权。'
               })
-            }
-
-            try {
-              await github.rest.actions.createWorkflowDispatch({
-                owner, repo, workflow_id: 'pr-check.yml', ref: 'main',
-                inputs: { pr_number: String(issue_number) }
-              })
-              core.info('已触发 workflow_dispatch 重新运行主流程')
-            } catch (e) {
-              core.warning(`触发主流程失败: ${e.message}`)
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner, repo, workflow_id: 'pr-check.yml', ref: 'main',
+                  inputs: { pr_number: String(issue_number), trigger_action: 'verify_ownership' }
+                })
+                core.info('已触发 verify_ownership dispatch')
+              } catch (e) { core.warning(`触发主流程失败: ${e.message}`) }
             }
