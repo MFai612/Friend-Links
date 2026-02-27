@@ -457,7 +457,7 @@ jobs:
             if (dataFiles.length === 0) return
 
             // 所有权验证目标链接
-            const OWNERSHIP_LINKS = ['http://waterspo.top']
+            const OWNERSHIP_LINKS = ['https://waterspo.top']
 
             // 从数据文件中提取 fallback_uri
             async function getFallbackUri(path) {
@@ -538,21 +538,44 @@ jobs:
               }
             } else {
               await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['验证网站所有权'] })
+
+              // 若存在 fallback_uri，检查当前页面是否已含有指定链接
+              let currentStatus = ''
+              for (const path of dataFiles) {
+                const fallbackUri = await getFallbackUri(path)
+                if (fallbackUri) {
+                  core.info(`检查当前状态 fallback_uri: ${fallbackUri}`)
+                  const { ok, html } = fetchAndCheck(fallbackUri)
+                  if (!ok) {
+                    currentStatus = `> **当前检测状态**：⚠️ 无法访问 \`${fallbackUri}\`，请确认页面可正常访问。`
+                  } else {
+                    const found = OWNERSHIP_LINKS.find(link => html.includes(link))
+                    currentStatus = found
+                      ? `> **当前检测状态**：✅ 已在 \`${fallbackUri}\` 检测到链接 \`${found}\`，可直接回复 \`准备完毕\` 触发验证。`
+                      : `> **当前检测状态**：❌ 已检测 \`${fallbackUri}\`，页面中尚未发现指定链接，请添加后回复 \`准备完毕\`。`
+                  }
+                  break
+                }
+              }
+
+              const bodyLines = [
+                '## 🔍 需要验证网站所有权',
+                '',
+                '请在您 `DATA` 中 `fallback_uri` 所指向的页面（如友链页、关于页）中添加以下**任意一个**链接：',
+                '',
+                '| 可选链接 |',
+                '|---|',
+                '| `https://waterspo.top` |',
+                '',
+                '> 若您的 `DATA` 中尚未包含 `fallback_uri` 字段，请先在数据文件中添加该字段，值为包含上述链接的页面地址。',
+              ]
+              if (currentStatus) { bodyLines.push(''); bodyLines.push(currentStatus) }
+              bodyLines.push('')
+              bodyLines.push('完成后在 PR 评论回复 `准备完毕` 以触发验证。')
+
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pull_number,
-                body: [
-                  '## 🔍 需要验证网站所有权',
-                  '',
-                  '请在您 `DATA` 中 `fallback_uri` 所指向的页面（如友链页、关于页）中添加以下**任意一个**链接：',
-                  '',
-                  '| 可选链接 |',
-                  '|---|',
-                  '| `http://waterspo.top` |',
-                  '',
-                  '> 若您的 `DATA` 中尚未包含 `fallback_uri` 字段，请先在数据文件中添加该字段，值为包含上述链接的页面地址。',
-                  '',
-                  '完成后在 PR 评论回复 `准备完毕` 以触发验证。'
-                ].join('\n')
+                body: bodyLines.join('\n')
               })
             }
             } catch (e) {
