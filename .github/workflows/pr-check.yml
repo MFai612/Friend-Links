@@ -296,11 +296,17 @@ jobs:
             let ref = context.payload.pull_request?.head?.sha
             if (!ref) { const p = await github.rest.pulls.get({ owner, repo, pull_number }); ref = p.data.head.sha }
 
-            // 标签跳过逻辑：workflow_dispatch 触发且 URL 已全部可达则跳过
-            const curIssue1 = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
-            const curLabels1 = new Set((curIssue1.data.labels || []).map(l => l.name))
-            if (context.eventName === 'workflow_dispatch' && curLabels1.has('URL全部可达')) {
-              core.info('URL 已验证可达，跳过'); return
+            // 标签跳过逻辑：verify_ownership 触发时直接跳过 URL 验证；其他 workflow_dispatch 且 URL 已全部可达时也跳过
+            const triggerAction1 = context.payload.inputs?.trigger_action || ''
+            if (triggerAction1 === 'verify_ownership') {
+              core.info('verify_ownership 触发，跳过 URL 验证'); return
+            }
+            if (context.eventName === 'workflow_dispatch') {
+              const curIssue1 = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
+              const curLabels1 = new Set((curIssue1.data.labels || []).map(l => l.name))
+              if (curLabels1.has('URL全部可达')) {
+                core.info('URL 已验证可达，跳过'); return
+              }
             }
 
             const dataFiles = []
@@ -431,7 +437,8 @@ jobs:
             try {
             const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
             const labels = new Set((issue.data.labels || []).map(l => l.name))
-            if (labels.has('所有权已验证')) {
+            // shouldVerify=true 时强制执行验证，忽略标签跳过
+            if (!shouldVerify && labels.has('所有权已验证')) {
               core.info('所有权已验证，跳过')
               return
             }
