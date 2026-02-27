@@ -417,6 +417,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Puppeteer
+        run: cd /tmp && npm init -y && npm install puppeteer
+
       - name: Verify site ownership
         uses: actions/github-script@v7
         with:
@@ -471,7 +474,54 @@ jobs:
               return (r.status === 0 && r.stdout.trim()) ? r.stdout.trim() : null
             }
 
-            // 用 curl 抓取页面内容并检查是否含有指定链接
+            // 检测常见 JS 质询页面特征（Cloudflare 等）
+            function isJsChallenge(html) {
+              const patterns = [
+                'cf-browser-verification',
+                '__cf_chl_opt',
+                'jschl-answer',
+                'Checking your browser before accessing',
+                'Please enable Cookies and reload the page',
+                'Enable JavaScript and cookies to continue',
+                'cf_clearance',
+                'Just a moment...',
+                '_cf_chl_enter',
+                'DDoS protection by'
+              ]
+              return patterns.some(p => html.includes(p))
+            }
+
+            // 使用 Puppeteer 无头浏览器抓取渲染后的页面内容
+            function fetchWithPuppeteer(url) {
+              const script = [
+                "const puppeteer = require('/tmp/node_modules/puppeteer');",
+                '(async () => {',
+                '  const browser = await puppeteer.launch({',
+                "    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],",
+                '    headless: true',
+                '  });',
+                '  const page = await browser.newPage();',
+                "  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');",
+                '  try {',
+                `    await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });`,
+                '    await new Promise(r => setTimeout(r, 3000));',
+                '    const content = await page.content();',
+                '    process.stdout.write(content);',
+                '  } finally {',
+                '    await browser.close();',
+                '  }',
+                "})().catch(e => { process.stderr.write(e.message + '\\n'); process.exit(1); });"
+              ].join('\n')
+              fs.writeFileSync('/tmp/puppeteer_fetch.js', script)
+              const pr = spawnSync('node', ['/tmp/puppeteer_fetch.js'], { encoding: 'utf8', timeout: 90000 })
+              if (pr.status !== 0) {
+                core.warning(`Puppeteer 抓取 ${url} 失败: ${pr.stderr}`)
+                return { ok: false, html: '', httpCode: 0 }
+              }
+              return { ok: true, html: pr.stdout, httpCode: 200 }
+            }
+
+            // 用 curl 抓取页面内容；若检测到 JS 质询则回退至 Puppeteer 无头浏览器
             function fetchAndCheck(url) {
               const r = spawnSync('curl', [
                 '-sL',
@@ -495,6 +545,11 @@ jobs:
               const idx = out.lastIndexOf(marker)
               const html = idx >= 0 ? out.slice(0, idx) : out
               const httpCode = idx >= 0 ? parseInt(out.slice(idx + marker.length), 10) || 0 : 0
+              // 检测到 JS 质询时，切换至 Puppeteer 无头浏览器重新抓取
+              if (isJsChallenge(html)) {
+                core.info(`${url} 返回了 JS 质询页面，切换至无头浏览器抓取`)
+                return fetchWithPuppeteer(url)
+              }
               return { ok: true, html, httpCode }
             }
 
