@@ -13,18 +13,19 @@ import sys
 import requests
 
 
-def check_url(url: str, timeout: int = 10, max_redirects: int = 3) -> tuple[bool, str]:
+def check_url(url: str, timeout: int = 10, max_redirects: int = 10) -> tuple[bool, str]:
     """
     Check URL reachability.
 
     Returns (is_reachable, message).
     """
     try:
-        response = requests.get(
+        session = requests.Session()
+        session.max_redirects = max_redirects
+        response = session.get(
             url,
             timeout=timeout,
             allow_redirects=True,
-            max_redirects=max_redirects,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (compatible; FriendLinkBot/1.0; "
