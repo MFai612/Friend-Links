@@ -523,7 +523,7 @@ jobs:
                   verified = true
                   break
                 } else {
-                  failReason = `在 ${fallbackUri} 的页面内容中未找到以下任意链接：\n${OWNERSHIP_LINKS.map(l => `- \`${l}\``).join('\n')}`
+                  failReason = `在 ${fallbackUri} 的页面内容中未找到以下任意链接：\n${OWNERSHIP_LINKS.map(l => `- \`${l}\``).join('\n')}\n\n可能是网站开启了Javascript质询。`
                 }
               }
 
