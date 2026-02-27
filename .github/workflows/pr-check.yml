@@ -114,6 +114,8 @@ jobs:
 
             const { spawnSync } = require('child_process')
             const fs = require('fs')
+
+            try {
             let allValid = true
             const errorBlocks = []
 
@@ -158,6 +160,14 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body })
               core.info('文件结构验证失败，已评论')
             }
+            } catch (e) {
+              core.error(`文件结构验证发生未预期错误: ${e.message}`)
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
+                  body: `## ⚠️ 文件结构验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
+              } catch {}
+              throw e
+            }
 
   # ── 3. 更新 PR 标题 ───────────────────────────────────────────────────────
   update_title:
@@ -199,6 +209,7 @@ jobs:
             const { spawnSync } = require('child_process')
             const fs = require('fs')
 
+            try {
             const path = dataFiles[0]
             const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
             if (Array.isArray(resp.data) || !resp.data?.content) return
@@ -220,6 +231,14 @@ jobs:
             if (pr.data.title !== newTitle) {
               await github.rest.pulls.update({ owner, repo, pull_number, title: newTitle })
               core.info(`PR 标题更新为: ${newTitle}`)
+            }
+            } catch (e) {
+              core.error(`更新 PR 标题发生未预期错误: ${e.message}`)
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
+                  body: `## ⚠️ PR 标题更新步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
+              } catch {}
+              throw e
             }
 
   # ── 4. URL 可达性验证 ──────────────────────────────────────────────────────
@@ -262,6 +281,7 @@ jobs:
             const { spawnSync } = require('child_process')
             const fs = require('fs')
 
+            try {
             // 用 curl 检测可达性：只要服务器有任意 HTTP 响应（含 403/404）即视为可达
             // curl 仅在连接失败/DNS 错误/超时时返回非零退出码
             function checkUrl(url) {
@@ -334,6 +354,14 @@ jobs:
               })
               core.setFailed('存在不可达的 URI')
             }
+            } catch (e) {
+              core.error(`URL 可达性验证发生未预期错误: ${e.message}`)
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
+                  body: `## ⚠️ URL 验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
+              } catch {}
+              throw e
+            }
 
   # ── 5. 网站所有权验证 ─────────────────────────────────────────────────────
   verify_ownership:
@@ -363,6 +391,7 @@ jobs:
             const ref   = context.payload.pull_request.head.sha
             const commentBody = context.payload.comment?.body || ''
 
+            try {
             const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
             const labels = new Set((issue.data.labels || []).map(l => l.name))
             if (labels.has('所有权已验证')) {
@@ -482,6 +511,14 @@ jobs:
                   '完成后在 PR 评论回复 `准备完毕` 以触发验证。'
                 ].join('\n')
               })
+            }
+            } catch (e) {
+              core.error(`所有权验证发生未预期错误: ${e.message}`)
+              try {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
+                  body: `## ⚠️ 所有权验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
+              } catch {}
+              throw e
             }
 
   # ── 6. 自动合并 ───────────────────────────────────────────────────────────
