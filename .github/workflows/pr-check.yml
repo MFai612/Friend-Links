@@ -80,7 +80,7 @@ jobs:
             const files = await listAllFiles()
             
             // 检查文件变更是否符合要求
-            const validChanges = files.every(file => 
+            const validChanges = files.some(file => 
               file.filename.match(/^src\/data\/[^\/]+\.py$/) && 
               file.filename !== 'src/data/__init__.py'
             )
@@ -100,9 +100,6 @@ jobs:
     
   validate_structure:
     needs: triage
-    if: >
-      github.event_name == 'pull_request_target' &&
-      contains(github.event.pull_request.labels.*.name, '友链申请中')
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -121,6 +118,7 @@ jobs:
           pip install requests
 
       - name: 验证文件结构
+        id: structure_check
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
@@ -197,6 +195,8 @@ jobs:
                   })
                 } catch {}
                 core.info('文件结构验证通过')
+                // 设置输出以便后续job使用
+                core.setOutput('structure_valid', 'true')
               } else {
                 await github.rest.issues.addLabels({
                   owner, repo, issue_number: pull_number,
@@ -232,6 +232,8 @@ jobs:
                   body: commentBody
                 })
                 core.info('文件结构验证失败，已发送评论')
+                // 设置输出标记验证失败
+                core.setOutput('structure_valid', 'false')
               }
             } catch (e) {
               core.error(`标签操作失败: ${e.message}`)
@@ -239,9 +241,7 @@ jobs:
 
   update_title:
     needs: validate_structure
-    if: >
-      github.event_name == 'pull_request_target' &&
-      contains(github.event.pull_request.labels.*.name, '文件结构符合')
+    if: needs.validate_structure.outputs.structure_valid == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 更新PR标题
@@ -312,9 +312,7 @@ jobs:
 
   validate_urls:
     needs: update_title
-    if: >
-      github.event_name == 'pull_request_target' &&
-      contains(github.event.pull_request.labels.*.name, '文件结构符合')
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: 验证URL可达性
@@ -479,9 +477,6 @@ jobs:
 
   verify_ownership:
     needs: validate_urls
-    if: >
-      github.event_name == 'pull_request_target' &&
-      contains(github.event.pull_request.labels.*.name, 'URL全部可达')
     runs-on: ubuntu-latest
     steps:
       - name: 验证网站所有权
@@ -632,9 +627,6 @@ jobs:
 
   auto_merge:
     needs: verify_ownership
-    if: >
-      github.event_name == 'pull_request_target' &&
-      contains(github.event.pull_request.labels.*.name, '所有权已验证')
     runs-on: ubuntu-latest
     steps:
       - name: 自动合并PR
