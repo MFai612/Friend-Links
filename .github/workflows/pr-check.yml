@@ -22,78 +22,74 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── 1. 初步筛查：仅处理修改 src/data/*.py 的 PR ─────────────────────────────
   triage:
     if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Initialize and ensure labels
+      - name: Initialize labels and validate changed files
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            if (!pull_number) return
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
 
             const LABELS = [
               '友链申请中',
-              '文件结构符合',
-              '文件结构不一致',
-              'URL全部可达',
-              '部分URL不可达',
-              'URL全部不可达',
-              '验证网站所有权',
-              '所有权已验证'
+              '文件结构符合', '文件结构不一致',
+              'URL全部可达', '部分URL不可达', 'URL全部不可达',
+              '验证网站所有权', '所有权已验证'
             ]
 
             async function ensureLabel(name) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name })
-              } catch (e) {
-                if (e.status === 404) {
+              try { await github.rest.issues.getLabel({ owner, repo, name }) }
+              catch (e) {
+                if (e.status === 404)
                   await github.rest.issues.createLabel({ owner, repo, name, color: 'ededed' })
-                } else {
-                  throw e
-                }
+                else throw e
               }
             }
-
             for (const l of LABELS) await ensureLabel(l)
 
-            // 获取PR变更文件并判断是否仅修改 src/data/*.py（排除 __init__.py ）
             const files = []
-            for await (const res of github.paginate.iterator(github.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 })) {
-              for (const f of res.data) files.push(f.filename)
-            }
+            for await (const res of github.paginate.iterator(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            )) for (const f of res.data) files.push(f.filename)
 
-            const valid = files.length > 0 && files.every(fn => fn.match(/^src\/data\/[^\/]+\.py$/) && fn !== 'src/data/__init__.py')
+            const valid = files.length > 0
+              && files.every(fn =>
+                  /^src\/data\/[^/]+\.py$/.test(fn) && fn !== 'src/data/__init__.py')
+
             if (!valid) {
               core.info('非友链目录变更或包含不允许的文件，停止流程')
               return
             }
 
-            await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['友链申请中'] })
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: pull_number, labels: ['友链申请中']
+            })
             core.info('添加标签: 友链申请中')
 
+  # ── 2. 文件结构验证 ────────────────────────────────────────────────────────
   validate_structure:
     needs: triage
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout PR
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.event.inputs.pr_number }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
 
-      - name: Setup Python
+      - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install dependencies
-        run: pip install requests
 
       - name: Validate data file structure
         uses: actions/github-script@v7
@@ -102,1012 +98,490 @@ jobs:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            if (!pull_number) return
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const ref   = context.payload.pull_request.head.sha
 
-            const files = []
-            for await (const res of github.paginate.iterator(github.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 })) {
-              for (const f of res.data) {
-                if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && f.filename !== 'src/data/__init__.py') files.push(f)
-              }
-            }
-            if (files.length === 0) return
-
-            const errors = []
-            for (const f of files) {
-              try {
-                const contentResp = await github.rest.repos.getContent({ owner, repo, path: f, ref: context.payload.pull_request?.head?.sha })
-                if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
-                const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-                const tmp = `/tmp/${f.replace(/\//g,'_')}`
-                require('fs').writeFileSync(tmp, content)
-
-                // 使用内置的小脚本验证结构（仓库应含 .github/scripts/validate_structure.py）
-                const { spawnSync } = require('child_process')
-                const res = spawnSync('python3', ['.github/scripts/validate_structure.py', tmp], { encoding: 'utf8', timeout: 120000 })
-                if (res.status !== 0) {
-                  const out = res.stdout || res.stderr || ''
-                  // 触发主流程通过 workflow_dispatch
-                  try {
-                    await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'pr-check.yml', ref: 'main', inputs: { pr_number: String(issue_number) } })
-                  } catch (e) { core.warning(`触发主流程失败: ${e.message}`) }
-                const contentResp = await github.rest.repos.getContent({ owner, repo, path: f, ref: context.payload.pull_request?.head?.sha })
-                if (!Array.isArray(contentResp.data) && contentResp.data?.content) {
-                  const content = Buffer.from(contentResp.data.content,'base64').toString('utf8')
-                  const tmp = `/tmp/${f.replace(/\//g,'_')}`
-                  require('fs').writeFileSync(tmp, content)
-                  const { spawnSync } = require('child_process')
-                  const r = spawnSync('python3', ['.github/scripts/extract_field.py', tmp, 'name'], { encoding: 'utf8', timeout: 10000 })
-                  if (r.status === 0) siteName = r.stdout.trim() || siteName
-                }
-              } catch (e) { core.warning(`提取名称失败: ${e.message}`) }
-            }
-
-            try {
-              await github.rest.pulls.merge({ owner, repo, pull_number, merge_method: 'squash', commit_title: `Merge友链申请: ${siteName}` })
-              await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body: '## 🎉 友链申请合并成功！\n\n已自动合并，感谢贡献！' })
-            } catch (e) {
-              await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body: `❌ 自动合并失败: ${e.message}` })
-            }
-
-  handle_comments:
-    if: >
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request &&
-      (contains(github.event.comment.body, '已修改') || contains(github.event.comment.body, '准备完毕'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Process user comment triggers
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT }}
-          script: |
-            const owner = context.repo.owner
-            const repo = context.repo.repo
-            const issue_number = context.payload.issue.number
-            const commentBody = context.payload.comment.body || ''
-            if (!issue_number) return
-
-            const current = await github.rest.issues.get({ owner, repo, issue_number })
-            const labels = new Set((current.data.labels||[]).map(l=>l.name))
-
-            if (commentBody.includes('已修改')) {
-              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: '文件结构不一致' }) } catch {}
-              try { await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['文件结构符合'] }) } catch {}
-              await github.rest.issues.createComment({ owner, repo, issue_number, body: '> ✅ 已处理"已修改"，将重新验证文件结构' })
-            }
-
-            if (commentBody.includes('准备完毕')) {
-              // 清理旧的 URL 标签，添加 URL全部可达 以触发后续流程（validate_urls 会再次检测）
-              for (const lbl of ['部分URL不可达','URL全部不可达']) try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
-              try { await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['URL全部可达'] }) } catch {}
-              // 触发所有权验证环节
-              for (const lbl of ['验证网站所有权','所有权已验证']) try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
-              await github.rest.issues.createComment({ owner, repo, issue_number, body: '> ✅ 已处理"准备完毕"，将重新验证URL与所有权' })
-            }
-
-            // 触发主流程通过 workflow_dispatch
-            try {
-              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'pr-check.yml', ref: 'main', inputs: { pr_number: String(issue_number) } })
-            } catch (e) { core.warning(`触发主流程失败: ${e.message}`) }
-name: 友链申请验证与合并流程
-
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'Pull request number to process'
-        required: false
-        default: ''
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
-concurrency:
-  group: friend-link-pr-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
-jobs:
-  triage:
-    if: ${{ github.event_name == 'pull_request_target' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: 初始化和标签管理
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT }}
-          script: |
-            const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
-            }
-            
-            // 定义标签常量
-            const LABEL_FRIEND_REQUEST = '友链申请中'
-            const LABEL_STRUCTURE_VALID = '文件结构符合'
-            const LABEL_STRUCTURE_INVALID = '文件结构不一致'
-            const LABEL_URL_ALL_REACHABLE = 'URL全部可达'
-            const LABEL_URL_PARTIAL_UNREACHABLE = '部分URL不可达'
-            const LABEL_URL_ALL_UNREACHABLE = 'URL全部不可达'
-            const LABEL_OWNERSHIP_VERIFY = '验证网站所有权'
-            const LABEL_OWNERSHIP_VERIFIED = '所有权已验证'
-            
-            // 确保标签存在
-            async function ensureLabel(name, color = 'ededed') {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name })
-              } catch (e) {
-                if (e.status !== 404) throw e
-                await github.rest.issues.createLabel({
-                  owner, repo, name, color
-                })
-              }
-            }
-            
-            // 为所有必要标签创建标签
-            for (const name of [
-              LABEL_FRIEND_REQUEST,
-              LABEL_STRUCTURE_VALID,
-              LABEL_STRUCTURE_INVALID,
-              LABEL_URL_ALL_REACHABLE,
-              LABEL_URL_PARTIAL_UNREACHABLE,
-              LABEL_URL_ALL_UNREACHABLE,
-              LABEL_OWNERSHIP_VERIFY,
-              LABEL_OWNERSHIP_VERIFIED
-            ]) {
-              await ensureLabel(name)
-            }
-            
-            // 获取变更文件列表
-            async function listAllFiles() {
-              const files = []
-              for await (const res of github.paginate.iterator(
-                github.rest.pulls.listFiles,
-                { owner, repo, pull_number, per_page: 100 }
-              )) {
-                for (const f of res.data) files.push(f)
-              }
-              return files
-            }
-            
-            const files = await listAllFiles()
-            
-            // 检查文件变更是否符合要求
-            const validChanges = files.some(file => 
-              file.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-              file.filename !== 'src/data/__init__.py'
-            )
-            
-            if (!validChanges) {
-              core.info('检测到无效文件变更，跳过处理')
-              return
-            }
-            
-            // 添加初始标签
-            await github.rest.issues.addLabels({
-              owner, repo, issue_number: pull_number,
-              labels: [LABEL_FRIEND_REQUEST]
-            })
-            
-            core.info('已添加初始标签并完成初步筛选')
-    
-  validate_structure:
-    needs: triage
-    runs-on: ubuntu-latest
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
-      - name: 设置Python环境
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
-
-      - name: 安装依赖
-        run: |
-          pip install requests
-
-      - name: 验证文件结构
-        id: structure_check
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT }}
-          script: |
-            const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
-            }
-            
-            const LABEL_STRUCTURE_VALID = '文件结构符合'
-            const LABEL_STRUCTURE_INVALID = '文件结构不一致'
-            
-            // 获取变更文件
-            const files = []
+            const dataFiles = []
             for await (const res of github.paginate.iterator(
               github.rest.pulls.listFiles,
               { owner, repo, pull_number, per_page: 100 }
-            )) {
-              for (const f of res.data) {
-                if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-                    f.filename !== 'src/data/__init__.py') {
-                  files.push(f)
-                }
+            )) for (const f of res.data)
+              if (/^src\/data\/[^/]+\.py$/.test(f.filename) && f.filename !== 'src/data/__init__.py')
+                dataFiles.push(f.filename)
+
+            if (dataFiles.length === 0) return
+
+            const { spawnSync } = require('child_process')
+            const fs = require('fs')
+            let allValid = true
+            const errorBlocks = []
+
+            for (const path of dataFiles) {
+              const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
+              if (Array.isArray(resp.data) || !resp.data?.content) continue
+              const content = Buffer.from(resp.data.content, 'base64').toString('utf8')
+              const tmp = `/tmp/${path.replace(/\//g, '_')}`
+              fs.writeFileSync(tmp, content)
+
+              const r = spawnSync('python3', ['.github/scripts/validate_structure.py', tmp],
+                { encoding: 'utf8', timeout: 30000 })
+              if (r.status !== 0) {
+                allValid = false
+                const lines = (r.stdout + r.stderr).split('\n')
+                  .filter(l => l.startsWith('ERROR:'))
+                  .map(l => `- ${l.replace('ERROR: ', '')}`)
+                  .join('\n')
+                errorBlocks.push(`**\`${path}\`**:\n${lines}`)
               }
-            }
-            
-            if (files.length === 0) return
-            
-            let validStructure = true
-            let errorMessages = []
-            
-            // 验证每个文件
-            for (const file of files) {
-              try {
-                const contentResp = await github.rest.repos.getContent({
-                    owner, repo, path: file.filename,
-                    ref: ref
-                  })
-                
-                if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
-                
-                const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-                const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
-                require('fs').writeFileSync(tempFileName, content)
-                
-                const { spawnSync } = require('child_process')
-                const result = spawnSync('python3', ['.github/scripts/validate_structure.py', tempFileName], {
-                  encoding: 'utf8', timeout: 30000
-                })
-                
-                if (result.status !== 0) {
-                  validStructure = false
-                  const errors = result.stdout.split('\n')
-                    .filter(line => line.startsWith('ERROR:'))
-                    .map(line => line.replace('ERROR: ', ''))
-                  errorMessages.push(`**\`${file.filename}\`**:\n${errors.map(e => `- ${e}`).join('\n')}\n`)
-                }
-              } catch (e) {
-                core.warning(`验证文件 ${file.filename} 时出错: ${e.message}`)
-              }
-            }
-            
-            // 更新标签
-            try {
-              if (validStructure) {
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: pull_number,
-                  labels: [LABEL_STRUCTURE_VALID]
-                })
-                // 移除无效标签（如果存在）
-                try {
-                  await github.rest.issues.removeLabel({
-                    owner, repo, issue_number: pull_number,
-                    name: LABEL_STRUCTURE_INVALID
-                  })
-                } catch {}
-                core.info('文件结构验证通过')
-                // 设置输出以便后续job使用
-                core.setOutput('structure_valid', 'true')
-              } else {
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: pull_number,
-                  labels: [LABEL_STRUCTURE_INVALID]
-                })
-                // 移除有效标签（如果存在）
-                try {
-                  await github.rest.issues.removeLabel({
-                    owner, repo, issue_number: pull_number,
-                    name: LABEL_STRUCTURE_VALID
-                  })
-                } catch {}
-                
-                // 发送错误评论
-                const commentBody = [
-                  '## ❌ 文件结构验证失败',
-                  '',
-                  '发现以下问题：',
-                  '',
-                  ...errorMessages,
-                  '请按照指定模板修改文件结构，确保：',
-                  '1. 文件为 `.py` 后缀',
-                  '2. 包含名为 `DATA` 的字典对象',
-                  '3. `DATA` 字典包含必填字段：`name`、`description`、`uri`',
-                  '4. 所有字段值为非空字符串',
-                  '5. 若存在 `avatar_uri` 字段，其值必须为非空字符串',
-                  '',
-                  '修改完成后，请在 PR 评论区回复 `已修改` 以重新触发验证。'
-                ].join('\n')
-                
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: pull_number,
-                  body: commentBody
-                })
-                core.info('文件结构验证失败，已发送评论')
-                // 设置输出标记验证失败
-                core.setOutput('structure_valid', 'false')
-              }
-            } catch (e) {
-              core.error(`标签操作失败: ${e.message}`)
             }
 
+            if (allValid) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name: '文件结构不一致' }) } catch {}
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['文件结构符合'] })
+              core.setOutput('valid', 'true')
+              core.info('文件结构验证通过')
+            } else {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name: '文件结构符合' }) } catch {}
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['文件结构不一致'] })
+              core.setOutput('valid', 'false')
+              const body = [
+                '## ❌ 文件结构验证失败',
+                '',
+                '发现以下问题：',
+                '',
+                ...errorBlocks,
+                '',
+                '请确保 `.py` 文件包含名为 `DATA` 的字典，且含有 `name`、`description`、`uri` 非空字段。',
+                '修改完成后在 PR 评论回复 `已修改` 以重新触发验证。'
+              ].join('\n')
+              await github.rest.issues.createComment({ owner, repo, issue_number: pull_number, body })
+              core.info('文件结构验证失败，已评论')
+            }
+
+  # ── 3. 更新 PR 标题 ───────────────────────────────────────────────────────
   update_title:
     needs: validate_structure
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: 更新PR标题
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update PR title with site name
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const ref   = context.payload.pull_request.head.sha
+
+            const dataFiles = []
+            for await (const res of github.paginate.iterator(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            )) for (const f of res.data)
+              if (/^src\/data\/[^/]+\.py$/.test(f.filename) && f.filename !== 'src/data/__init__.py')
+                dataFiles.push(f.filename)
+
+            if (dataFiles.length === 0) return
+
+            const { spawnSync } = require('child_process')
+            const fs = require('fs')
+
+            const path = dataFiles[0]
+            const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
+            if (Array.isArray(resp.data) || !resp.data?.content) return
+            const content = Buffer.from(resp.data.content, 'base64').toString('utf8')
+            const tmp = `/tmp/${path.replace(/\//g, '_')}`
+            fs.writeFileSync(tmp, content)
+
+            const r = spawnSync('python3', ['.github/scripts/extract_field.py', tmp, 'name'],
+              { encoding: 'utf8', timeout: 10000 })
+            if (r.status !== 0) {
+              core.warning(`提取 name 字段失败: ${r.stderr || r.stdout}`)
+              return
             }
-            
-            try {
-              // 获取变更文件
-              const files = []
-              for await (const res of github.paginate.iterator(
-                github.rest.pulls.listFiles,
-                { owner, repo, pull_number, per_page: 100 }
-              )) {
-                for (const f of res.data) {
-                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-                      f.filename !== 'src/data/__init__.py') {
-                    files.push(f)
-                  }
-                }
-              }
-              
-              if (files.length === 0) return
-              
-              // 获取第一个文件的内容并提取name字段
-              const firstFile = files[0]
-              const contentResp = await github.rest.repos.getContent({
-                owner, repo, path: firstFile.filename,
-                ref: ref
-              })
-              
-              if (Array.isArray(contentResp.data) || !contentResp.data?.content) return
-              
-              const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-              const tempFileName = `/tmp/${firstFile.filename.replace(/\//g, '_')}`
-              require('fs').writeFileSync(tempFileName, content)
-              
-              const { spawnSync } = require('child_process')
-              const result = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'name'], {
-                encoding: 'utf8', timeout: 10000
-              })
-              
-              if (result.status === 0) {
-                const siteName = result.stdout.trim()
-                if (siteName) {
-                  const newTitle = `友链：${siteName}`
-                  
-                  // 获取当前PR的最新信息
-                  const currentPR = await github.rest.pulls.get({
-                    owner, repo, pull_number
-                  })
-                  
-                  const currentTitle = currentPR.data.title
-                  core.info(`当前标题: ${currentTitle}`)
-                  core.info(`新标题: ${newTitle}`)
-                  
-                  // 只有当标题不同时才更新（幂等性）
-                  if (currentTitle !== newTitle) {
-                    await github.rest.pulls.update({
-                      owner, repo, pull_number,
-                      title: newTitle
-                    })
-                    core.info(`✅ PR标题已更新为: ${newTitle}`)
-                  } else {
-                    core.info('✅ PR标题已经是正确格式，无需更新')
-                  }
-                } else {
-                  core.warning('⚠️ 未能提取到网站名称')
-                }
-              } else {
-                core.warning(`⚠️ 提取网站名称失败: ${result.stderr || result.stdout}`)
-              }
-            } catch (e) {
-              core.warning(`更新PR标题时出错: ${e.message}`)
+            const siteName = r.stdout.trim()
+            if (!siteName) return
+
+            const newTitle = `友链：${siteName}`
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number })
+            if (pr.data.title !== newTitle) {
+              await github.rest.pulls.update({ owner, repo, pull_number, title: newTitle })
+              core.info(`PR 标题更新为: ${newTitle}`)
             }
 
+  # ── 4. URL 可达性验证 ──────────────────────────────────────────────────────
   validate_urls:
     needs: update_title
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: 验证URL可达性
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate URL reachability
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
-            }
-            
-            const LABEL_URL_ALL_REACHABLE = 'URL全部可达'
-            const LABEL_URL_PARTIAL_UNREACHABLE = '部分URL不可达'
-            
-            try {
-              // 获取变更文件
-              const files = []
-              for await (const res of github.paginate.iterator(
-                github.rest.pulls.listFiles,
-                { owner, repo, pull_number, per_page: 100 }
-              )) {
-                for (const f of res.data) {
-                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-                      f.filename !== 'src/data/__init__.py') {
-                    files.push(f)
-                  }
-                }
-              }
-              
-              if (files.length === 0) return
-              
-              let allUrlsReachable = true
-              let unreachableUris = []
-              let unreachableAvatarUris = []
-              
-              // 验证每个文件中的URL
-              for (const file of files) {
-                try {
-                  const contentResp = await github.rest.repos.getContent({
-                    owner, repo, path: file.filename,
-                    ref: ref
-                  })
-                  
-                  if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
-                  
-                  const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-                  const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
-                  require('fs').writeFileSync(tempFileName, content)
-                  
-                  const { spawnSync } = require('child_process')
-                  
-                  // 验证主URL
-                  const uriResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'uri'], {
-                    encoding: 'utf8', timeout: 10000
-                  })
-                  
-                  if (uriResult.status === 0) {
-                    const uri = uriResult.stdout.trim()
-                    if (uri) {
-                      core.info(`检查主URL: ${uri}`)
-                      const checkResult = spawnSync('python3', ['.github/scripts/check_url.py', uri], {
-                        encoding: 'utf8', timeout: 15000
-                      })
-                      
-                      if (checkResult.status !== 0) {
-                        allUrlsReachable = false
-                        unreachableUris.push(`- \`${uri}\` (来自 \`${file.filename}\`)`)
-                      }
-                    }
-                  }
-                  
-                  // 验证头像URL
-                  const avatarResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'avatar_uri'], {
-                    encoding: 'utf8', timeout: 10000
-                  })
-                  
-                  if (avatarResult.status === 0) {
-                    const avatarUri = avatarResult.stdout.trim()
-                    if (avatarUri) {
-                      core.info(`检查头像URL: ${avatarUri}`)
-                      const checkResult = spawnSync('python3', ['.github/scripts/check_url.py', avatarUri], {
-                        encoding: 'utf8', timeout: 15000
-                      })
-                      
-                      if (checkResult.status !== 0) {
-                        unreachableAvatarUris.push(`- \`${avatarUri}\` (来自 \`${file.filename}\`)`)
-                      }
-                    }
-                  }
-                } catch (e) {
-                  core.warning(`验证文件 ${file.filename} 中的URL时出错: ${e.message}`)
-                }
-              }
-              
-              // 更新标签
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const ref   = context.payload.pull_request.head.sha
+
+            const dataFiles = []
+            for await (const res of github.paginate.iterator(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            )) for (const f of res.data)
+              if (/^src\/data\/[^/]+\.py$/.test(f.filename) && f.filename !== 'src/data/__init__.py')
+                dataFiles.push(f.filename)
+
+            if (dataFiles.length === 0) return
+
+            const { spawnSync } = require('child_process')
+            const fs = require('fs')
+
+            async function checkUrl(url) {
               try {
-                // 清理旧标签
-                for (const label of [LABEL_URL_ALL_REACHABLE, LABEL_URL_PARTIAL_UNREACHABLE]) {
-                  try {
-                    await github.rest.issues.removeLabel({
-                      owner, repo, issue_number: pull_number, name: label
-                    })
-                  } catch {}
-                }
-                
-                if (allUrlsReachable) {
-                  await github.rest.issues.addLabels({
-                    owner, repo, issue_number: pull_number,
-                    labels: [LABEL_URL_ALL_REACHABLE]
-                  })
-                  core.info('所有URL均可访问')
-                } else {
-                  await github.rest.issues.addLabels({
-                    owner, repo, issue_number: pull_number,
-                    labels: [LABEL_URL_PARTIAL_UNREACHABLE]
-                  })
-                  
-                  // 发送错误评论
-                  const commentBody = [
-                    '## ⚠️ URL可达性验证失败',
-                    '',
-                    '以下 URL 不可达：',
-                    '',
-                    ...unreachableUris,
-                    '',
-                    '请检查并修改相关URL，确保它们可以正常访问。',
-                    '',
-                    '修改完成后，请在 PR 评论区回复 `准备完毕` 以重新触发验证。'
-                  ].join('\n')
-                  
-                  await github.rest.issues.createComment({
-                    owner, repo, issue_number: pull_number,
-                    body: commentBody
-                  })
-                  core.info('部分URL不可达，已发送评论')
-                }
-                
-                // 处理头像URL警告
-                if (unreachableAvatarUris.length > 0) {
-                  const avatarCommentBody = [
-                    '## 📝 头像 URL 警告',
-                    '',
-                    '以下头像 URL 目前无法访问，建议检查：',
-                    '',
-                    ...unreachableAvatarUris,
-                    '',
-                    '友链申请仍会继续处理，但建议确保头像 URL 可正常访问。'
-                  ].join('\n')
-                  
-                  await github.rest.issues.createComment({
-                    owner, repo, issue_number: pull_number,
-                    body: avatarCommentBody
-                  })
-                  core.info('部分头像URL不可达，已发送警告')
-                }
-              } catch (e) {
-                core.error(`标签操作失败: ${e.message}`)
-              }
-            } catch (e) {
-              core.error(`URL验证失败: ${e.message}`)
+                const ctrl = new AbortController()
+                const id = setTimeout(() => ctrl.abort(), 10000)
+                const r = await fetch(url, { method: 'HEAD', signal: ctrl.signal, redirect: 'follow' })
+                clearTimeout(id)
+                return r.ok || r.status < 400
+              } catch { return false }
             }
 
+            const unreachableUris = []
+            const unreachableAvatars = []
+
+            for (const path of dataFiles) {
+              const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
+              if (Array.isArray(resp.data) || !resp.data?.content) continue
+              const content = Buffer.from(resp.data.content, 'base64').toString('utf8')
+              const tmp = `/tmp/${path.replace(/\//g, '_')}`
+              fs.writeFileSync(tmp, content)
+
+              for (const field of ['uri', 'avatar_uri']) {
+                const r = spawnSync('python3', ['.github/scripts/extract_field.py', tmp, field],
+                  { encoding: 'utf8', timeout: 10000 })
+                if (r.status !== 0 || !r.stdout.trim()) continue
+                const url = r.stdout.trim()
+                const ok = await checkUrl(url)
+                if (!ok) {
+                  if (field === 'uri') unreachableUris.push({ path, url })
+                  else unreachableAvatars.push({ path, url })
+                }
+              }
+            }
+
+            // 清理旧 URL 标签
+            for (const lbl of ['URL全部可达', '部分URL不可达', 'URL全部不可达'])
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name: lbl }) } catch {}
+
+            if (unreachableUris.length === 0) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['URL全部可达'] })
+              core.info('所有主 URI 均可达')
+              if (unreachableAvatars.length > 0) {
+                const lines = unreachableAvatars.map(x => `- \`${x.path}\`: ${x.url}`).join('\n')
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: `## ⚠️ 头像 URL 不可达（不影响合并）\n\n${lines}\n\n如需显示头像，请检查上述链接。`
+                })
+              }
+            } else {
+              const total = dataFiles.length
+              const label = unreachableUris.length === total ? 'URL全部不可达' : '部分URL不可达'
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: [label] })
+              const lines = unreachableUris.map(x => `- \`${x.path}\`: ${x.url}`).join('\n')
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pull_number,
+                body: [
+                  '## ❌ 以下 URI 不可达',
+                  '',
+                  lines,
+                  '',
+                  '请确认链接可正常访问后，在 PR 评论回复 `准备完毕` 以重新验证。'
+                ].join('\n')
+              })
+              core.setFailed('存在不可达的 URI')
+            }
+
+  # ── 5. 网站所有权验证 ─────────────────────────────────────────────────────
   verify_ownership:
     needs: validate_urls
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: 验证网站所有权
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify site ownership
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
-            }
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const ref   = context.payload.pull_request.head.sha
             const commentBody = context.payload.comment?.body || ''
-            
-            const LABEL_OWNERSHIP_VERIFY = '验证网站所有权'
-            const LABEL_OWNERSHIP_VERIFIED = '所有权已验证'
-            
-            try {
-              // 检查是否已经通过验证
-              const currentIssue = await github.rest.issues.get({
-                owner, repo, issue_number: pull_number
-              })
-              
-              const currentLabels = new Set((currentIssue.data.labels || []).map(l => l.name))
-              
-              if (currentLabels.has(LABEL_OWNERSHIP_VERIFIED)) {
-                core.info('所有权已验证，跳过此阶段')
-                return
-              }
-              
-              // 判断触发方式
-              if (commentBody.includes('准备完毕')) {
-                core.info('由"准备完毕"关键词触发所有权验证...')
-                
-                // 获取变更文件
-                const files = []
-                for await (const res of github.paginate.iterator(
-                  github.rest.pulls.listFiles,
-                  { owner, repo, pull_number, per_page: 100 }
-                )) {
-                  for (const f of res.data) {
-                    if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-                        f.filename !== 'src/data/__init__.py') {
-                      files.push(f)
-                    }
-                  }
-                }
-                
-                let verificationPassed = false
-                
-                // 验证每个文件
-                for (const file of files) {
-                  try {
-                    const contentResp = await github.rest.repos.getContent({
-                        owner, repo, path: file.filename,
-                        ref: ref
-                      })
-                    
-                    if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
-                    
-                    const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-                    const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
-                    require('fs').writeFileSync(tempFileName, content)
-                    
-                    const { spawnSync } = require('child_process')
-                    const uriResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'uri'], {
-                      encoding: 'utf8', timeout: 10000
-                    })
-                    
-                    if (uriResult.status === 0) {
-                      const uri = uriResult.stdout.trim()
-                      if (uri) {
-                        core.info(`验证所有权: ${uri}`)
-                        const checkResult = spawnSync('python3', ['.github/scripts/check_ownership.py', uri], {
-                          encoding: 'utf8', timeout: 20000
-                        })
-                        
-                        if (checkResult.status === 0) {
-                          verificationPassed = true
-                          break
-                        }
-                      }
-                    }
-                  } catch (e) {
-                    core.warning(`验证文件 ${file.filename} 时出错: ${e.message}`)
-                  }
-                }
-                
-                if (verificationPassed) {
-                  // 移除验证标签，添加已验证标签
-                  try {
-                    await github.rest.issues.removeLabel({
-                      owner, repo, issue_number: pull_number,
-                      name: LABEL_OWNERSHIP_VERIFY
-                    })
-                  } catch {}
-                  
-                  await github.rest.issues.addLabels({
-                    owner, repo, issue_number: pull_number,
-                    labels: [LABEL_OWNERSHIP_VERIFIED]
-                  })
-                  core.info('网站所有权验证通过')
-                } else {
-                  // 发送失败评论
-                  const failComment = [
-                    '## ❌ 网站所有权验证失败',
-                    '',
-                    '未能在您的网站 HTML 源码中检测到指向以下任一 URL 的链接：',
-                    '- `https://waterspo.top`',
-                    '- `https://www.waterspo.top`',
-                    '',
-                    '请确保链接包含在网站页面的 HTML 中，然后在 PR 评论区回复 `准备完毕` 以重新触发验证。'
-                  ].join('\n')
-                  
-                  await github.rest.issues.createComment({
-                    owner, repo, issue_number: pull_number,
-                    body: failComment
-                  })
-                  core.info('所有权验证失败，已发送评论')
-                }
-              } else {
-                core.info('首次执行 - 发送所有权验证说明...')
-                
-                // 添加验证标签
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: pull_number,
-                  labels: [LABEL_OWNERSHIP_VERIFY]
-                })
-                
-                // 发送验证说明
-                const instructionComment = [
-                  '## 🔗 网站所有权验证',
-                  '',
-                  '为了确认您是该网站的所有者，请在您的网站页面中添加指向以下任一 URL 的链接：',
-                  '',
-                  '- `https://waterspo.top`',
-                  '- `https://www.waterspo.top`',
-                  '',
-                  '完成操作后，请在 PR 评论区回复 `准备完毕` 以触发所有权验证。'
-                ].join('\n')
-                
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: pull_number,
-                  body: instructionComment
-                })
-              }
-            } catch (e) {
-              core.error(`所有权验证失败: ${e.message}`)
+
+            const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
+            const labels = new Set((issue.data.labels || []).map(l => l.name))
+            if (labels.has('所有权已验证')) {
+              core.info('所有权已验证，跳过')
+              return
             }
 
+            const { spawnSync } = require('child_process')
+            const fs = require('fs')
+
+            const dataFiles = []
+            for await (const res of github.paginate.iterator(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            )) for (const f of res.data)
+              if (/^src\/data\/[^/]+\.py$/.test(f.filename) && f.filename !== 'src/data/__init__.py')
+                dataFiles.push(f.filename)
+
+            if (dataFiles.length === 0) return
+
+            if (commentBody.includes('准备完毕')) {
+              let verified = false
+              for (const path of dataFiles) {
+                const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
+                if (Array.isArray(resp.data) || !resp.data?.content) continue
+                const content = Buffer.from(resp.data.content, 'base64').toString('utf8')
+                const tmp = `/tmp/${path.replace(/\//g, '_')}`
+                fs.writeFileSync(tmp, content)
+
+                const uriR = spawnSync('python3', ['.github/scripts/extract_field.py', tmp, 'uri'],
+                  { encoding: 'utf8', timeout: 10000 })
+                if (uriR.status !== 0 || !uriR.stdout.trim()) continue
+                const siteUrl = uriR.stdout.trim()
+
+                try {
+                  const ctrl = new AbortController()
+                  const id = setTimeout(() => ctrl.abort(), 15000)
+                  const r = await fetch(siteUrl, { signal: ctrl.signal })
+                  clearTimeout(id)
+                  const html = await r.text()
+                  const repoUrl = `https://github.com/${owner}/${repo}`
+                  if (html.includes(repoUrl) || html.includes(`${owner}.github.io`)) {
+                    verified = true
+                    break
+                  }
+                } catch (e) {
+                  core.warning(`抓取 ${siteUrl} 失败: ${e.message}`)
+                }
+              }
+
+              if (verified) {
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name: '验证网站所有权' }) } catch {}
+                await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['所有权已验证'] })
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: '## ✅ 网站所有权验证通过\n\n已在您的网站上发现仓库链接，将自动合并 PR。'
+                })
+                core.info('所有权验证通过')
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: [
+                    '## ❌ 未能验证网站所有权',
+                    '',
+                    `请确保您的网站页面包含指向 \`https://github.com/${owner}/${repo}\` 的链接。`,
+                    '',
+                    '添加后再次回复 `准备完毕` 以重新验证。'
+                  ].join('\n')
+                })
+                core.setFailed('所有权验证失败')
+              }
+            } else {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: ['验证网站所有权'] })
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pull_number,
+                body: [
+                  '## 🔍 需要验证网站所有权',
+                  '',
+                  '请在您网站的**友链页**或**关于页**添加我们仓库的链接：',
+                  '',
+                  '```',
+                  `https://github.com/${owner}/${repo}`,
+                  '```',
+                  '',
+                  '添加完成后，在 PR 评论回复 `准备完毕` 以触发验证。'
+                ].join('\n')
+              })
+            }
+
+  # ── 6. 自动合并 ───────────────────────────────────────────────────────────
   auto_merge:
     needs: verify_ownership
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: 自动合并PR
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Auto-merge PR
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
-            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
-            let ref = context.payload.pull_request?.head?.sha
-            if (!ref && pull_number) {
-              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
-              ref = prInfo.data.head.sha
+            const repo  = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const ref   = context.payload.pull_request.head.sha
+
+            const issue = await github.rest.issues.get({ owner, repo, issue_number: pull_number })
+            const labels = new Set((issue.data.labels || []).map(l => l.name))
+            if (!labels.has('所有权已验证')) {
+              core.info('所有权标签不存在，跳过合并')
+              return
             }
-            
+
+            const { spawnSync } = require('child_process')
+            const fs = require('fs')
+            let siteName = '未知站点'
+
             try {
-              // 获取PR信息以提取站点名称
-              const pr = await github.rest.pulls.get({
-                owner, repo, pull_number
-              })
-              
-              // 获取变更文件以提取name字段
-              const files = []
+              const dataFiles = []
               for await (const res of github.paginate.iterator(
                 github.rest.pulls.listFiles,
                 { owner, repo, pull_number, per_page: 100 }
-              )) {
-                for (const f of res.data) {
-                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
-                      f.filename !== 'src/data/__init__.py') {
-                    files.push(f)
-                  }
+              )) for (const f of res.data)
+                if (/^src\/data\/[^/]+\.py$/.test(f.filename) && f.filename !== 'src/data/__init__.py')
+                  dataFiles.push(f.filename)
+
+              if (dataFiles.length > 0) {
+                const path = dataFiles[0]
+                const resp = await github.rest.repos.getContent({ owner, repo, path, ref })
+                if (!Array.isArray(resp.data) && resp.data?.content) {
+                  const content = Buffer.from(resp.data.content, 'base64').toString('utf8')
+                  const tmp = `/tmp/${path.replace(/\//g, '_')}`
+                  fs.writeFileSync(tmp, content)
+                  const r = spawnSync('python3', ['.github/scripts/extract_field.py', tmp, 'name'],
+                    { encoding: 'utf8', timeout: 10000 })
+                  if (r.status === 0 && r.stdout.trim()) siteName = r.stdout.trim()
                 }
               }
-              
-              let siteName = '未知站点'
-              if (files.length > 0) {
-                try {
-                  const firstFile = files[0]
-                  const contentResp = await github.rest.repos.getContent({
-                    owner, repo, path: firstFile.filename,
-                    ref: ref
-                  })
-                  
-                  if (!Array.isArray(contentResp.data) && contentResp.data?.content) {
-                    const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
-                    const tempFileName = `/tmp/${firstFile.filename.replace(/\//g, '_')}`
-                    require('fs').writeFileSync(tempFileName, content)
-                    
-                    const { spawnSync } = require('child_process')
-                    const nameResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'name'], {
-                      encoding: 'utf8', timeout: 10000
-                    })
-                    
-                    if (nameResult.status === 0) {
-                      const extractedName = nameResult.stdout.trim()
-                      if (extractedName) {
-                        siteName = extractedName
-                      }
-                    }
-                  }
-                } catch (e) {
-                  core.warning(`提取站点名称时出错: ${e.message}`)
-                }
-              }
-              
-              // 执行合并
+            } catch (e) { core.warning(`提取站点名称失败: ${e.message}`) }
+
+            try {
               await github.rest.pulls.merge({
                 owner, repo, pull_number,
                 merge_method: 'squash',
-                commit_title: `Merge友链申请: ${siteName}`
+                commit_title: `友链申请: ${siteName}`
               })
-              
-              core.info('PR合并成功')
-              
-              // 发送成功评论
-              const successComment = [
-                '## 🎉 友链申请合并成功！',
-                '',
-                '恭喜！您的友链申请已成功合并，稍后将在网站上显示。感谢您的贡献！'
-              ].join('\n')
-              
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pull_number,
-                body: successComment
+                body: `## 🎉 友链申请合并成功！\n\n恭喜！**${siteName}** 的友链申请已合并，稍后将在网站显示。感谢您的贡献！`
               })
-              
+              core.info('PR 合并成功')
             } catch (e) {
-              core.error(`自动合并失败: ${e.message}`)
-              
-              // 发送失败评论
-              const failComment = [
-                '## ⚠️ 合并失败',
-                '',
-                '自动合并过程中出现问题，请联系仓库维护者手动处理。',
-                '',
-                `错误详情: ${e.message}`
-              ].join('\n')
-              
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pull_number,
-                body: failComment
+                body: `## ⚠️ 自动合并失败\n\n请联系仓库维护者手动处理。\n\n错误详情：\`${e.message}\``
               })
+              core.setFailed(`合并失败: ${e.message}`)
             }
 
+  # ── 7. 评论触发器：处理 "已修改" / "准备完毕" ─────────────────────────────
   handle_comments:
-    if: >
+    if: >-
       github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request &&
+      github.event.issue.pull_request != null &&
       github.event.comment.user.login == github.event.issue.user.login &&
+      github.event.comment.user.type != 'Bot' &&
       (contains(github.event.comment.body, '已修改') ||
        contains(github.event.comment.body, '准备完毕')) &&
-      github.event.comment.user.login != 'github-actions[bot]' &&
-      github.event.comment.user.type != 'Bot' &&
-      !startsWith(github.event.comment.body, '✅') &&
-      !startsWith(github.event.comment.body, '❌') &&
-      !startsWith(github.event.comment.body, '> ✅') &&
-      !startsWith(github.event.comment.body, '> ❌') &&
+      !startsWith(github.event.comment.body, '>') &&
       !contains(github.event.comment.body, '已处理')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: 处理用户评论
+      - name: Process user comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const owner = context.repo.owner
-            const repo = context.repo.repo
+            const repo  = context.repo.repo
             const issue_number = context.payload.issue.number
-            const commentBody = context.payload.comment.body
-            
-            core.info(`收到评论: ${commentBody}`)
-            
-            try {
-              // 获取PR当前标签
-              const currentIssue = await github.rest.issues.get({
-                owner, repo, issue_number
-              })
-              
-              const currentLabels = new Set((currentIssue.data.labels || []).map(l => l.name))
-              core.info(`当前标签: ${Array.from(currentLabels).join(', ')}`)
-              
-              if (commentBody.includes('已修改')) {
-                core.info('处理"已修改"评论')
-                // 移除文件结构不一致标签，触发重新验证
-                if (currentLabels.has('文件结构不一致')) {
-                  try {
-                    await github.rest.issues.removeLabel({
-                      owner, repo, issue_number,
-                      name: '文件结构不一致'
-                    })
-                    core.info('✅ 已移除"文件结构不一致"标签')
-                  } catch (e) {
-                    core.warning(`移除标签失败: ${e.message}`)
-                  }
-                }
-                
-                // 添加文件结构符合标签以触发后续流程
-                if (!currentLabels.has('文件结构符合')) {
-                  try {
-                    await github.rest.issues.addLabels({
-                      owner, repo, issue_number,
-                      labels: ['文件结构符合']
-                    })
-                    core.info('✅ 已添加"文件结构符合"标签')
-                  } catch (e) {
-                    core.warning(`添加标签失败: ${e.message}`)
-                  }
-                }
-              } else if (commentBody.includes('准备完毕')) {
-                core.info('处理"准备完毕"评论')
-                // 移除URL相关的问题标签
-                const urlProblemLabels = ['部分URL不可达', 'URL全部不可达']
-                for (const label of urlProblemLabels) {
-                  if (currentLabels.has(label)) {
-                    try {
-                      await github.rest.issues.removeLabel({
-                        owner, repo, issue_number,
-                        name: label
-                      })
-                      core.info(`✅ 已移除"${label}"标签`) 
-                    } catch (e) {
-                      core.warning(`移除标签${label}失败: ${e.message}`)
-                    }
-                  }
-                }
-                
-                // 添加URL全部可达标签
-                if (!currentLabels.has('URL全部可达')) {
-                  try {
-                    await github.rest.issues.addLabels({
-                      owner, repo, issue_number,
-                      labels: ['URL全部可达']
-                    })
-                    core.info('✅ 已添加"URL全部可达"标签')
-                  } catch (e) {
-                    core.warning(`添加URL标签失败: ${e.message}`)
-                  }
-                }
-                
-                // 移除所有权验证相关标签，触发重新验证
-                const ownershipLabels = ['验证网站所有权', '所有权已验证']
-                for (const label of ownershipLabels) {
-                  if (currentLabels.has(label)) {
-                    try {
-                      await github.rest.issues.removeLabel({
-                        owner, repo, issue_number,
-                        name: label
-                      })
-                      core.info(`✅ 已移除"${label}"标签`)
-                    } catch (e) {
-                      core.warning(`移除标签${label}失败: ${e.message}`)
-                    }
-                  }
-                }
-              }
-              
-              // 发送确认评论（使用特殊的前缀避免触发循环）
-              const confirmMessage = commentBody.includes('已修改') ? 
-                '> ✅ 已处理"已修改"请求，将重新验证文件结构' : 
-                '> ✅ 已处理"准备完毕"请求，将重新验证URL和所有权'
-              
-              await github.rest.issues.createComment({
-                owner, repo, issue_number,
-                body: confirmMessage
-              })
+            const body  = context.payload.comment.body || ''
 
-              // 触发工作流重新运行主流程（通过 workflow_dispatch）
-              try {
-                await github.rest.actions.createWorkflowDispatch({
-                  owner, repo,
-                  workflow_id: 'pr-check.yml',
-                  ref: 'main',
-                  inputs: { pr_number: String(issue_number) }
-                })
-                core.info('已通过 workflow_dispatch 触发主流程')
-              } catch (e) {
-                core.warning(`触发主流程失败: ${e.message}`)
-              }
-              
-            } catch (e) {
-              core.error(`处理评论时出错: ${e.message}`)
-              // 发送错误通知
+            core.info(`收到评论: ${body}`)
+
+            const issue = await github.rest.issues.get({ owner, repo, issue_number })
+            const labels = new Set((issue.data.labels || []).map(l => l.name))
+
+            if (body.includes('已修改')) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: '文件结构不一致' }) } catch {}
+              if (!labels.has('文件结构符合'))
+                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['文件结构符合'] })
               await github.rest.issues.createComment({
                 owner, repo, issue_number,
-                body: `❌ 处理您的评论时出现错误: ${e.message}`
+                body: '> ✅ 已处理"已修改"，将重新验证文件结构。'
               })
+            }
+
+            if (body.includes('准备完毕')) {
+              for (const lbl of ['部分URL不可达', 'URL全部不可达'])
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
+              if (!labels.has('URL全部可达'))
+                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['URL全部可达'] })
+              for (const lbl of ['验证网站所有权', '所有权已验证'])
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: lbl }) } catch {}
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: '> ✅ 已处理"准备完毕"，将重新验证所有权。'
+              })
+            }
+
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo, workflow_id: 'pr-check.yml', ref: 'main',
+                inputs: { pr_number: String(issue_number) }
+              })
+              core.info('已触发 workflow_dispatch 重新运行主流程')
+            } catch (e) {
+              core.warning(`触发主流程失败: ${e.message}`)
             }
