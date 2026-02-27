@@ -375,7 +375,7 @@ jobs:
                 const lines = unreachableAvatars.map(x => `- \`${x.path}\`: ${x.url}`).join('\n')
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: pull_number,
-                  body: `## ⚠️ 头像 URL 不可达（不影响合并）\n\n${lines}\n\n如需显示头像，请检查上述链接。`
+                  body: `## ⚠️ 头像 URL 不可达\n\n${lines}\n\n请检查上述链接。`
                 })
               }
             } else {
@@ -435,9 +435,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Puppeteer
-        run: cd /tmp && npm init -y && npm install puppeteer
-
       - name: Verify site ownership
         uses: actions/github-script@v7
         with:
@@ -492,83 +489,31 @@ jobs:
               return (r.status === 0 && r.stdout.trim()) ? r.stdout.trim() : null
             }
 
-            // 检测常见 JS 质询页面特征（Cloudflare 等）
-            function isJsChallenge(html) {
-              const patterns = [
-                'cf-browser-verification',
-                '__cf_chl_opt',
-                'jschl-answer',
-                'Checking your browser before accessing',
-                'Please enable Cookies and reload the page',
-                'Enable JavaScript and cookies to continue',
-                'cf_clearance',
-                'Just a moment...',
-                '_cf_chl_enter',
-                'DDoS protection by'
-              ]
-              return patterns.some(p => html.includes(p))
-            }
-
-            // 使用 Puppeteer 无头浏览器抓取渲染后的页面内容
-            function fetchWithPuppeteer(url) {
-              const script = [
-                "const puppeteer = require('/tmp/node_modules/puppeteer');",
-                '(async () => {',
-                '  const browser = await puppeteer.launch({',
-                "    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],",
-                '    headless: true',
-                '  });',
-                '  const page = await browser.newPage();',
-                "  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');",
-                '  try {',
-                `    await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });`,
-                '    await new Promise(r => setTimeout(r, 3000));',
-                '    const content = await page.content();',
-                '    process.stdout.write(content);',
-                '  } finally {',
-                '    await browser.close();',
-                '  }',
-                "})().catch(e => { process.stderr.write(e.message + '\\n'); process.exit(1); });"
-              ].join('\n')
-              fs.writeFileSync('/tmp/puppeteer_fetch.js', script)
-              const pr = spawnSync('node', ['/tmp/puppeteer_fetch.js'], { encoding: 'utf8', timeout: 90000 })
-              if (pr.status !== 0) {
-                core.warning(`Puppeteer 抓取 ${url} 失败: ${pr.stderr}`)
+            // 使用 fetch API 抓取页面内容
+            async function fetchPage(url) {
+              const controller = new AbortController()
+              const timer = setTimeout(() => controller.abort(), 15000)
+              try {
+                const res = await fetch(url, {
+                  method: 'GET',
+                  redirect: 'follow',
+                  headers: {
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                  },
+                  signal: controller.signal,
+                })
+                const httpCode = res.status
+                const html = await res.text()
+                core.info(`fetchPage [${url}]: http=${httpCode}`)
+                return { ok: true, html, httpCode }
+              } catch (e) {
+                core.warning(`fetchPage 抓取 ${url} 失败: ${e.message}`)
                 return { ok: false, html: '', httpCode: 0 }
+              } finally {
+                clearTimeout(timer)
               }
-              return { ok: true, html: pr.stdout, httpCode: 200 }
-            }
-
-            // 用 curl 抓取页面内容；若检测到 JS 质询则回退至 Puppeteer 无头浏览器
-            function fetchAndCheck(url) {
-              const r = spawnSync('curl', [
-                '-sL',
-                '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                '-H', 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
-                '-H', 'Accept-Encoding: gzip, deflate, br',
-                '-H', 'Cache-Control: no-cache',
-                '--compressed',
-                '--max-time', '15',
-                '--retry', '2',
-                '-w', '\n__STATUS__%{http_code}',
-                url
-              ], { encoding: 'utf8', timeout: 60000 })
-              if (r.status !== 0) {
-                core.warning(`curl 抓取 ${url} 失败，exit=${r.status}`)
-                return { ok: false, html: '', httpCode: 0 }
-              }
-              const out = r.stdout
-              const marker = '\n__STATUS__'
-              const idx = out.lastIndexOf(marker)
-              const html = idx >= 0 ? out.slice(0, idx) : out
-              const httpCode = idx >= 0 ? parseInt(out.slice(idx + marker.length), 10) || 0 : 0
-              // 检测到 JS 质询时，切换至 Puppeteer 无头浏览器重新抓取
-              if (isJsChallenge(html)) {
-                core.info(`${url} 返回了 JS 质询页面，切换至无头浏览器抓取`)
-                return fetchWithPuppeteer(url)
-              }
-              return { ok: true, html, httpCode }
             }
 
             if (shouldVerify) {
@@ -583,7 +528,7 @@ jobs:
                 }
 
                 core.info(`检查 fallback_uri: ${fallbackUri}`)
-                const { ok, html } = fetchAndCheck(fallbackUri)
+                const { ok, html } = await fetchPage(fallbackUri)
                 core.info(`[源码] ${fallbackUri}\n${html}`)
                 if (!ok) {
                   failReason = `无法访问 \`fallback_uri\`：${fallbackUri}`
@@ -596,7 +541,7 @@ jobs:
                   verified = true
                   break
                 } else {
-                  failReason = `在 ${fallbackUri} 的页面内容中未找到以下任意链接：\n${OWNERSHIP_LINKS.map(l => `- \`${l}\``).join('\n')}\n\n可能是网站开启了Javascript质询。`
+                  failReason = `在 ${fallbackUri} 的页面内容中未找到以下任意链接：\n${OWNERSHIP_LINKS.map(l => `- \`${l}\``).join('\n')}`
                 }
               }
 
@@ -630,7 +575,7 @@ jobs:
                 const fallbackUri = await getFallbackUri(path)
                 if (fallbackUri) {
                   core.info(`检查当前状态 fallback_uri: ${fallbackUri}`)
-                  const { ok, html, httpCode } = fetchAndCheck(fallbackUri)
+                  const { ok, html, httpCode } = await fetchPage(fallbackUri)
                   core.info(`[源码] ${fallbackUri}\n${html}`)
                   if (!ok) {
                     currentStatus = `> **当前检测状态**：⚠️ 无法访问 \`${fallbackUri}\`，请确认页面可正常访问。`
@@ -639,7 +584,7 @@ jobs:
                     const codeStr = httpCode ? ` (HTTP ${httpCode})` : ''
                     currentStatus = found
                       ? `> **当前检测状态**：✅ 已在 \`${fallbackUri}\` 检测到链接 \`${found}\`${codeStr}，可直接回复 \`准备完毕\` 触发验证。`
-                      : `> **当前检测状态**：❌ 已检测 \`${fallbackUri}\`${codeStr}，页面中尚未发现指定链接，请添加后回复 \`准备完毕\`。`
+                      : `> **当前检测状态**：❌ 已检测 \`${fallbackUri}\`${codeStr}，页面中尚未发现指定链接，请添加后回复 \`准备完毕\`。\n> 可能是页面触发了Javascript质询。`
                   }
                   break
                 }
