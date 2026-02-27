@@ -742,11 +742,16 @@ jobs:
     if: >
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
+      github.event.comment.user.login == github.event.issue.user.login &&
       (contains(github.event.comment.body, '已修改') ||
        contains(github.event.comment.body, '准备完毕')) &&
       github.event.comment.user.login != 'github-actions[bot]' &&
+      github.event.comment.user.type != 'Bot' &&
       !startsWith(github.event.comment.body, '✅') &&
-      !startsWith(github.event.comment.body, '❌')
+      !startsWith(github.event.comment.body, '❌') &&
+      !startsWith(github.event.comment.body, '> ✅') &&
+      !startsWith(github.event.comment.body, '> ❌') &&
+      !contains(github.event.comment.body, '已处理')
     runs-on: ubuntu-latest
     steps:
       - name: 处理用户评论
