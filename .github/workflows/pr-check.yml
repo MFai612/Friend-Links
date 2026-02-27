@@ -7,9 +7,8 @@ on:
     types: [created]
 
 jobs:
-  check-pull-request:
-    # Trigger on new/updated PRs, or on PR comments containing the
-    # specific keywords '已修改' or '准备完毕'.
+  validate-and-process:
+    # 触发条件：PR创建/更新 或 PR评论包含关键词
     if: >
       (github.event_name == 'pull_request') ||
       (github.event_name == 'issue_comment' &&
@@ -21,27 +20,29 @@ jobs:
     permissions:
       pull-requests: write
       contents: write
+    
     steps:
       # ---------------------------------------------------------------
-      # Environment setup
+      # 环境初始化阶段
       # ---------------------------------------------------------------
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
+      - name: 设置Python环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
-        run: pip install requests
+      - name: 安装依赖
+        run: |
+          pip install requests
 
       # ---------------------------------------------------------------
-      # Phase 0: Resolve PR number (works for both event types)
+      # 阶段0：解析PR编号
       # ---------------------------------------------------------------
-      - name: Get PR number
+      - name: 获取PR编号
         id: pr-info
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -50,88 +51,107 @@ jobs:
             PR_NUMBER="${{ github.event.issue.number }}"
           fi
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "Resolved PR number: ${PR_NUMBER}"
+          echo "解析到PR编号: ${PR_NUMBER}"
 
       # ---------------------------------------------------------------
-      # Phase 1: File change validation
-      # Only changes inside src/data/*.py (excluding __init__.py) are
-      # permitted. If any other file is modified the workflow silently
-      # exits - no labels, no comments.
+      # 阶段1：文件变更检查
       # ---------------------------------------------------------------
-      - name: Check file changes
-        id: file-check
+      - name: 检查文件变更
+        id: file-change-check
         timeout-minutes: 3
         env:
           PAT: ${{ secrets.PAT }}
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-
+          
+          # 使用GitHub API获取变更文件列表
           CHANGED_FILES=$(curl -sf \
             -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/files" \
             | jq -r '.[].filename')
-
-          echo "=== Changed files ==="
+          
+          echo "=== 变更的文件 ==="
           echo "$CHANGED_FILES"
-          echo "====================="
-
+          echo "=================="
+          
+          # 验证变更是否符合要求
           VALID_CHANGE="true"
+          INVALID_FILES_FOUND="false"
+          
           while IFS= read -r file; do
             [[ -z "$file" ]] && continue
+            
+            # 检查是否为src/data/目录下的.py文件，且不是__init__.py
             if [[ ! "$file" =~ ^src/data/[^/]+\.py$ ]] || \
                [[ "$file" == "src/data/__init__.py" ]]; then
               VALID_CHANGE="false"
-              echo "Invalid or disallowed file detected: ${file}"
-              break
+              INVALID_FILES_FOUND="true"
+              echo "❌ 发现无效文件: ${file}"
+            else
+              echo "✅ 有效文件: ${file}"
             fi
           done <<< "$CHANGED_FILES"
-
+          
           echo "valid_change=${VALID_CHANGE}" >> "$GITHUB_OUTPUT"
+          echo "invalid_files_found=${INVALID_FILES_FOUND}" >> "$GITHUB_OUTPUT"
           {
             echo "changed_files<<__FILELIST__"
             echo "$CHANGED_FILES"
             echo "__FILELIST__"
           } >> "$GITHUB_OUTPUT"
-
+          
           if [[ "$VALID_CHANGE" == "true" ]]; then
-            echo "All changed files are in src/data/"
+            echo "✓ 所有变更文件均符合要求"
           else
-            echo "Non-data file changes detected - workflow will exit quietly."
+            echo "! 检测到不符合要求的文件变更"
           fi
 
-      - name: Add label
-        if: steps.file-check.outputs.valid_change == 'true'
+      # 如果文件变更不符合要求，直接退出工作流程
+      - name: 终止无效变更的工作流程
+        if: steps.file-change-check.outputs.invalid_files_found == 'true'
+        run: |
+          echo "::notice::检测到无效文件变更，工作流程终止"
+          exit 0
+
+      # 为符合条件的PR添加初始标签
+      - name: 添加初始标签
+        if: steps.file-change-check.outputs.valid_change == 'true'
         timeout-minutes: 2
         env:
           PAT: ${{ secrets.PAT }}
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+          
+          # 添加"友链申请中"标签
           curl -sf -X POST \
             -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-            -d "$(jq -n '{"labels":["友链申请中"]}')" > /dev/null || true
-          echo "Label added"
+            -d '{"labels":["友链申请中"]}' > /dev/null || true
+          
+          echo "✓ 已添加'友链申请中'标签"
 
       # ---------------------------------------------------------------
-      # Phase 2: File structure validation
+      # 阶段2：文件结构验证
       # ---------------------------------------------------------------
-      - name: Validate file structure
+      - name: 验证文件结构
         id: structure-validation
-        if: steps.file-check.outputs.valid_change == 'true'
+        if: steps.file-change-check.outputs.valid_change == 'true'
         timeout-minutes: 3
         env:
           PAT: ${{ secrets.PAT }}
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
-
+          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
+          COMMENT_TRIGGER="${{ github.event.comment.body }}"
+          
+          # 标签和评论辅助函数
           add_label() {
             curl -sf -X POST \
               -H "Authorization: Bearer $PAT" \
@@ -140,6 +160,7 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
               -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
           }
+          
           remove_label() {
             local encoded
             encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
@@ -149,6 +170,7 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
           }
+          
           post_comment() {
             local body_json
             body_json=$(jq -n --arg b "$1" '{"body":$b}')
@@ -159,23 +181,33 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
               -d "$body_json" > /dev/null || true
           }
-
+          
+          # 判断是否由"已修改"关键词触发重新验证
+          TRIGGERED_BY_MODIFY=false
+          if [[ "$COMMENT_TRIGGER" == *"已修改"* ]]; then
+            TRIGGERED_BY_MODIFY=true
+            echo "🔄 由'已修改'关键词触发重新验证"
+          fi
+          
           VALID_STRUCTURE="true"
           ERROR_BLOCK=""
-
+          
+          # 验证每个变更的文件
           while IFS= read -r file; do
             [[ -z "$file" ]] && continue
-            echo "--- Validating: ${file} ---"
+            echo "--- 验证文件: ${file} ---"
+            
             OUTPUT=$(python3 .github/scripts/validate_structure.py "$file" 2>&1)
             EXIT_CODE=$?
             echo "$OUTPUT"
+            
             if [[ $EXIT_CODE -ne 0 ]]; then
               VALID_STRUCTURE="false"
               ERRORS=$(echo "$OUTPUT" | grep "^ERROR:" | sed 's/^ERROR: /- /')
               ERROR_BLOCK+="**\`${file}\`**:\n${ERRORS}\n\n"
             fi
           done <<< "$CHANGED_FILES"
-
+          
           echo "valid_structure=${VALID_STRUCTURE}" >> "$GITHUB_OUTPUT"
           {
             echo "error_messages<<__ERRMSG__"
@@ -183,26 +215,31 @@ jobs:
             echo ""
             echo "__ERRMSG__"
           } >> "$GITHUB_OUTPUT"
-
+          
+          # 处理验证结果
           if [[ "$VALID_STRUCTURE" == "true" ]]; then
             add_label "文件结构符合"
             remove_label "文件结构不一致"
-            echo "All files passed structure validation"
+            echo "✓ 所有文件通过结构验证"
           else
             add_label "文件结构不一致"
             remove_label "文件结构符合"
-            COMMENT=$(printf '## 文件结构验证失败\n\n发现以下问题：\n\n%b请按照指定模板修改文件结构，确保：\n1. 文件为 `.py` 后缀\n2. 包含名为 `DATA` 的字典对象\n3. `DATA` 字典包含必填字段：`name`、`description`、`uri`\n4. 所有字段值为非空字符串\n5. 若存在 `avatar_uri` 字段，其值必须为非空字符串\n\n修改完成后，请在 PR 评论区回复 `已修改` 以重新触发验证。' "$ERROR_BLOCK")
-            post_comment "$COMMENT"
-            echo "Structure validation failed - comment posted"
+            
+            # 只有在首次失败或由"已修改"触发时才发送评论
+            if [[ "$TRIGGERED_BY_MODIFY" == "true" ]] || [[ "$COMMENT_TRIGGER" != *"已修改"* ]]; then
+              COMMENT=$(printf '## ❌ 文件结构验证失败\n\n发现以下问题：\n\n%b请按照指定模板修改文件结构，确保：\n1. 文件为 `.py` 后缀\n2. 包含名为 `DATA` 的字典对象\n3. `DATA` 字典包含必填字段：`name`、`description`、`uri`\n4. 所有字段值为非空字符串\n5. 若存在 `avatar_uri` 字段，其值必须为非空字符串\n\n修改完成后，请在 PR 评论区回复 `已修改` 以重新触发验证。' "$ERROR_BLOCK")
+              post_comment "$COMMENT"
+            fi
+            echo "! 文件结构验证失败"
           fi
 
       # ---------------------------------------------------------------
-      # Phase 3: PR title update
+      # 阶段3：PR标题更新
       # ---------------------------------------------------------------
-      - name: Update PR title
+      - name: 更新PR标题
         id: update-title
         if: >
-          steps.file-check.outputs.valid_change == 'true' &&
+          steps.file-change-check.outputs.valid_change == 'true' &&
           steps.structure-validation.outputs.valid_structure == 'true'
         timeout-minutes: 2
         env:
@@ -210,25 +247,30 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
-
+          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
+          
+          # 获取第一个有效的Python文件
           FIRST_FILE=$(echo "$CHANGED_FILES" | grep -E '\.py$' | head -1)
+          
+          # 提取网站名称
           SITE_NAME=$(python3 .github/scripts/extract_field.py "$FIRST_FILE" name 2>/dev/null || echo "")
-
+          
           if [[ -z "$SITE_NAME" ]]; then
-            echo "Could not extract site name - skipping title update"
+            echo "::warning::无法提取网站名称，跳过标题更新"
             echo "site_name=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
+          
           NEW_TITLE="友链：${SITE_NAME}"
-
+          
+          # 获取当前标题
           CURRENT_TITLE=$(curl -sf \
             -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" | jq -r '.title')
-
+          
+          # 只有当标题不同时才更新（幂等性）
           if [[ "$CURRENT_TITLE" != "$NEW_TITLE" ]]; then
             TITLE_JSON=$(jq -n --arg t "$NEW_TITLE" '{"title":$t}')
             curl -sf -X PATCH \
@@ -237,20 +279,20 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" \
               -d "$TITLE_JSON" > /dev/null
-            echo "PR title updated: ${NEW_TITLE}"
+            echo "✓ PR标题已更新为: ${NEW_TITLE}"
           else
-            echo "PR title already correct - skipping update"
+            echo "✓ PR标题已经是正确格式，无需更新"
           fi
-
+          
           echo "site_name=${SITE_NAME}" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
-      # Phase 4: URL reachability validation
+      # 阶段4：URL可达性验证
       # ---------------------------------------------------------------
-      - name: Validate URL reachability
+      - name: 验证URL可达性
         id: url-validation
         if: >
-          steps.file-check.outputs.valid_change == 'true' &&
+          steps.file-change-check.outputs.valid_change == 'true' &&
           steps.structure-validation.outputs.valid_structure == 'true'
         timeout-minutes: 5
         env:
@@ -258,8 +300,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
-
+          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
+          COMMENT_TRIGGER="${{ github.event.comment.body }}"
+          
+          # 辅助函数
           add_label() {
             curl -sf -X POST \
               -H "Authorization: Bearer $PAT" \
@@ -268,6 +312,7 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
               -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
           }
+          
           remove_label() {
             local encoded
             encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
@@ -277,6 +322,7 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
           }
+          
           post_comment() {
             local body_json
             body_json=$(jq -n --arg b "$1" '{"body":$b}')
@@ -287,61 +333,78 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
               -d "$body_json" > /dev/null || true
           }
-
+          
+          # 判断是否由"准备完毕"关键词触发重新验证
+          TRIGGERED_BY_READY=false
+          if [[ "$COMMENT_TRIGGER" == *"准备完毕"* ]]; then
+            TRIGGERED_BY_READY=true
+            echo "🔄 由'准备完毕'关键词触发URL重新验证"
+          fi
+          
           ALL_URI_REACHABLE="true"
           UNREACHABLE_URIS=""
           UNREACHABLE_AVATAR_URIS=""
-
+          
+          # 验证每个文件中的URL
           while IFS= read -r file; do
             [[ -z "$file" ]] && continue
-
+            
+            # 验证主URL (uri)
             URI=$(python3 .github/scripts/extract_field.py "$file" uri 2>/dev/null || echo "")
             if [[ -n "$URI" ]]; then
-              echo "Checking uri: ${URI}"
+              echo "🔍 检查主URL: ${URI}"
               if ! python3 .github/scripts/check_url.py "$URI"; then
                 ALL_URI_REACHABLE="false"
                 UNREACHABLE_URIS+="- \`${URI}\` (来自 \`${file}\`)\n"
               fi
             fi
-
+            
+            # 验证头像URL (avatar_uri)
             AVATAR_URI=$(python3 .github/scripts/extract_field.py "$file" avatar_uri 2>/dev/null || echo "")
             if [[ -n "$AVATAR_URI" ]]; then
-              echo "Checking avatar_uri: ${AVATAR_URI}"
+              echo "🔍 检查头像URL: ${AVATAR_URI}"
               if ! python3 .github/scripts/check_url.py "$AVATAR_URI"; then
                 UNREACHABLE_AVATAR_URIS+="- \`${AVATAR_URI}\` (来自 \`${file}\`)\n"
               fi
             fi
           done <<< "$CHANGED_FILES"
-
+          
           echo "all_uri_reachable=${ALL_URI_REACHABLE}" >> "$GITHUB_OUTPUT"
-
+          
+          # 清理旧的URL相关标签
           remove_label "URL全部可达"
           remove_label "部分URL不可达"
           remove_label "URL全部不可达"
-
+          
+          # 处理验证结果
           if [[ "$ALL_URI_REACHABLE" == "true" ]]; then
             add_label "URL全部可达"
-            echo "All URIs are reachable"
+            echo "✓ 所有URL均可访问"
           else
             add_label "部分URL不可达"
-            COMMENT=$(printf 'URL可达性验证失败\n\n以下 URL 不可达：\n\n%b\n请检查并修改相关URL，确保它们可以正常访问。\n\n修改完成后，请在 PR 评论区回复 `准备完毕` 以重新触发验证。' "$UNREACHABLE_URIS")
-            post_comment "$COMMENT"
-            echo "Some URIs are unreachable - comment posted"
+            
+            # 只有在首次失败或由"准备完毕"触发时才发送评论
+            if [[ "$TRIGGERED_BY_READY" == "true" ]] || [[ "$COMMENT_TRIGGER" != *"准备完毕"* ]]; then
+              COMMENT=$(printf '## ⚠️ URL可达性验证失败\n\n以下 URL 不可达：\n\n%b\n请检查并修改相关URL，确保它们可以正常访问。\n\n修改完成后，请在 PR 评论区回复 `准备完毕` 以重新触发验证。' "$UNREACHABLE_URIS")
+              post_comment "$COMMENT"
+            fi
+            echo "! 部分URL不可达"
           fi
-
+          
+          # 处理头像URL警告（不影响合并）
           if [[ -n "$UNREACHABLE_AVATAR_URIS" ]]; then
-            AVATAR_COMMENT=$(printf '头像 URL 不可达（警告，不阻止合并）\n\n以下头像 URL 目前无法访问，建议检查：\n\n%b\n友链申请仍会继续处理，但建议确保头像 URL 可正常访问。' "$UNREACHABLE_AVATAR_URIS")
+            AVATAR_COMMENT=$(printf '## 📝 头像 URL 警告\n\n以下头像 URL 目前无法访问，建议检查：\n\n%b\n友链申请仍会继续处理，但建议确保头像 URL 可正常访问。' "$UNREACHABLE_AVATAR_URIS")
             post_comment "$AVATAR_COMMENT"
-            echo "Some avatar URIs are unreachable - warning comment posted"
+            echo "! 部分头像URL不可达（警告）"
           fi
 
       # ---------------------------------------------------------------
-      # Phase 5: Website ownership verification
+      # 阶段5：网站所有权验证
       # ---------------------------------------------------------------
-      - name: Website ownership verification
+      - name: 验证网站所有权
         id: ownership-check
         if: >
-          steps.file-check.outputs.valid_change == 'true' &&
+          steps.file-change-check.outputs.valid_change == 'true' &&
           steps.structure-validation.outputs.valid_structure == 'true' &&
           steps.url-validation.outputs.all_uri_reachable == 'true'
         timeout-minutes: 5
@@ -350,9 +413,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
+          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
           COMMENT_BODY="${{ github.event.comment.body }}"
-
+          
+          # 辅助函数
           add_label() {
             curl -sf -X POST \
               -H "Authorization: Bearer $PAT" \
@@ -361,6 +425,7 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
               -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
           }
+          
           remove_label() {
             local encoded
             encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
@@ -370,6 +435,7 @@ jobs:
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
           }
+          
           post_comment() {
             local body_json
             body_json=$(jq -n --arg b "$1" '{"body":$b}')
@@ -380,29 +446,32 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
               -d "$body_json" > /dev/null || true
           }
-
+          
+          # 检查是否已经通过所有权验证
           CURRENT_LABELS=$(curl -sf \
             -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
             | jq -r '[.[].name] | join(",")' 2>/dev/null || echo "")
-
+          
           if [[ "$CURRENT_LABELS" == *"所有权已验证"* ]]; then
-            echo "Ownership already verified - skipping"
+            echo "✓ 所有权已验证，跳过此阶段"
             echo "verification_passed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
+          
+          # 判断触发方式
           if [[ "$COMMENT_BODY" == *"准备完毕"* ]]; then
-            echo "Triggered by comment - running ownership verification..."
+            echo "🔄 由'准备完毕'关键词触发所有权验证..."
             VERIFICATION_PASSED="false"
-
+            
+            # 执行所有权验证
             while IFS= read -r file; do
               [[ -z "$file" ]] && continue
               URI=$(python3 .github/scripts/extract_field.py "$file" uri 2>/dev/null || echo "")
               if [[ -n "$URI" ]]; then
-                echo "Verifying ownership for: ${URI}"
+                echo "🔍 验证所有权: ${URI}"
                 RESULT=$(python3 .github/scripts/check_ownership.py "$URI" 2>&1)
                 EXIT_CODE=$?
                 echo "$RESULT"
@@ -412,30 +481,30 @@ jobs:
                 fi
               fi
             done <<< "$CHANGED_FILES"
-
+            
             echo "verification_passed=${VERIFICATION_PASSED}" >> "$GITHUB_OUTPUT"
-
+            
             if [[ "$VERIFICATION_PASSED" == "true" ]]; then
               remove_label "验证网站所有权"
               add_label "所有权已验证"
-              echo "Website ownership verified"
+              echo "✓ 网站所有权验证通过"
             else
-              post_comment "## 网站所有权验证失败\n\n未能在您的网站 HTML 源码中检测到指向以下任一 URL 的链接：\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n请确保链接包含在网站页面的 HTML 中，然后在 PR 评论区回复 \`准备完毕\` 以重新触发验证。"
-              echo "Ownership verification failed - comment posted"
+              post_comment "## ❌ 网站所有权验证失败\n\n未能在您的网站 HTML 源码中检测到指向以下任一 URL 的链接：\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n请确保链接包含在网站页面的 HTML 中，然后在 PR 评论区回复 \`准备完毕\` 以重新触发验证。"
+              echo "! 所有权验证失败"
             fi
           else
-            echo "First pass - posting ownership verification instructions..."
+            echo "ℹ️ 首次执行 - 发送所有权验证说明..."
             echo "verification_passed=false" >> "$GITHUB_OUTPUT"
             add_label "验证网站所有权"
-            post_comment "## 网站所有权验证\n\n为了确认您是该网站的所有者，请在您的网站页面中添加指向以下任一 URL 的链接：\n\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n完成操作后，请在 PR 评论区回复 \`准备完毕\` 以触发所有权验证。"
+            post_comment "## 🔗 网站所有权验证\n\n为了确认您是该网站的所有者，请在您的网站页面中添加指向以下任一 URL 的链接：\n\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n完成操作后，请在 PR 评论区回复 \`准备完毕\` 以触发所有权验证。"
           fi
 
       # ---------------------------------------------------------------
-      # Phase 6: Auto-merge
+      # 阶段6：自动合并
       # ---------------------------------------------------------------
-      - name: Check conditions and merge
+      - name: 条件检查与自动合并
         if: >
-          steps.file-check.outputs.valid_change == 'true' &&
+          steps.file-change-check.outputs.valid_change == 'true' &&
           steps.structure-validation.outputs.valid_structure == 'true' &&
           steps.url-validation.outputs.all_uri_reachable == 'true' &&
           steps.ownership-check.outputs.verification_passed == 'true'
@@ -446,7 +515,7 @@ jobs:
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           SITE_NAME="${{ steps.update-title.outputs.site_name }}"
-
+          
           post_comment() {
             local body_json
             body_json=$(jq -n --arg b "$1" '{"body":$b}')
@@ -457,24 +526,27 @@ jobs:
               "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
               -d "$body_json" > /dev/null || true
           }
-
+          
+          # 获取当前所有标签
           LABELS=$(curl -sf \
             -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
             | jq -r '[.[].name] | join(",")')
-
-          echo "Current labels: ${LABELS}"
-
+          
+          echo "当前标签: ${LABELS}"
+          
+          # 检查必需的标签
           HAS_FRIEND_LINK=$([[ "$LABELS" == *"友链申请中"* ]] && echo "true" || echo "false")
           HAS_STRUCTURE=$([[ "$LABELS" == *"文件结构符合"* ]] && echo "true" || echo "false")
           HAS_URL=$([[ "$LABELS" == *"URL全部可达"* ]] && echo "true" || echo "false")
           HAS_OWNERSHIP=$([[ "$LABELS" == *"所有权已验证"* ]] && echo "true" || echo "false")
-
+          
           ALL_MET="true"
           MISSING_COMMENT=""
-
+          
+          # 构建缺失条件的提示信息
           if [[ "$HAS_FRIEND_LINK" != "true" ]]; then
             ALL_MET="false"; MISSING_COMMENT+=$'\n- 友链申请中'
           fi
@@ -487,20 +559,30 @@ jobs:
           if [[ "$HAS_OWNERSHIP" != "true" ]]; then
             ALL_MET="false"; MISSING_COMMENT+=$'\n- 所有权已验证'
           fi
-
+          
+          # 执行合并或提示缺失条件
           if [[ "$ALL_MET" == "true" ]]; then
-            echo "All conditions met - merging PR"
+            echo "✓ 所有条件满足 - 执行自动合并"
+            
             MERGE_JSON=$(jq -n --arg title "Merge友链申请: ${SITE_NAME}" \
               '{"merge_method":"squash","commit_title":$title}')
-            curl -sf -X PUT \
+            
+            RESPONSE=$(curl -sf -X PUT \
               -H "Authorization: Bearer $PAT" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/merge" \
-              -d "$MERGE_JSON"
-            echo "PR merged successfully"
+              -d "$MERGE_JSON")
+            
+            if [[ $? -eq 0 ]]; then
+              echo "✓ PR合并成功"
+              post_comment "## 🎉 友链申请合并成功！\n\n恭喜！您的友链申请已成功合并，稍后将在网站上显示。感谢您的贡献！"
+            else
+              echo "::error::PR合并失败"
+              post_comment "## ⚠️ 合并失败\n\n自动合并过程中出现问题，请联系仓库维护者手动处理。"
+            fi
           else
-            echo "Not all conditions met - posting status comment"
-            COMMENT=$(printf '## 自动合并条件未满足\n\n当前缺少以下验证标签：%s\n\n请完成所有验证步骤后再尝试合并。' "$MISSING_COMMENT")
+            echo "! 条件不满足 - 发送状态提醒"
+            COMMENT=$(printf '## ⏳ 自动合并条件未满足\n\n当前缺少以下验证标签：%s\n\n请完成所有验证步骤后再尝试合并。' "$MISSING_COMMENT")
             post_comment "$COMMENT"
           fi
