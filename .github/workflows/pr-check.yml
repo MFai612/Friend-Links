@@ -162,10 +162,6 @@ jobs:
             }
             } catch (e) {
               core.error(`文件结构验证发生未预期错误: ${e.message}`)
-              try {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
-                  body: `## ⚠️ 文件结构验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
-              } catch {}
               throw e
             }
 
@@ -234,10 +230,6 @@ jobs:
             }
             } catch (e) {
               core.error(`更新 PR 标题发生未预期错误: ${e.message}`)
-              try {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
-                  body: `## ⚠️ PR 标题更新步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
-              } catch {}
               throw e
             }
 
@@ -356,10 +348,6 @@ jobs:
             }
             } catch (e) {
               core.error(`URL 可达性验证发生未预期错误: ${e.message}`)
-              try {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
-                  body: `## ⚠️ URL 验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
-              } catch {}
               throw e
             }
 
@@ -514,10 +502,6 @@ jobs:
             }
             } catch (e) {
               core.error(`所有权验证发生未预期错误: ${e.message}`)
-              try {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pull_number,
-                  body: `## ⚠️ 所有权验证步骤异常\n\n\`${e.message}\`\n\n请联系仓库维护者。` })
-              } catch {}
               throw e
             }
 
