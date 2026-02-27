@@ -5,6 +5,12 @@ on:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to process'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -27,7 +33,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             
             // 定义标签常量
             const LABEL_FRIEND_REQUEST = '友链申请中'
@@ -125,7 +136,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             
             const LABEL_STRUCTURE_VALID = '文件结构符合'
             const LABEL_STRUCTURE_INVALID = '文件结构不一致'
@@ -153,9 +169,9 @@ jobs:
             for (const file of files) {
               try {
                 const contentResp = await github.rest.repos.getContent({
-                  owner, repo, path: file.filename,
-                  ref: context.payload.pull_request.head.sha
-                })
+                    owner, repo, path: file.filename,
+                    ref: ref
+                  })
                 
                 if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
                 
@@ -250,7 +266,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             
             try {
               // 获取变更文件
@@ -273,7 +294,7 @@ jobs:
               const firstFile = files[0]
               const contentResp = await github.rest.repos.getContent({
                 owner, repo, path: firstFile.filename,
-                ref: context.payload.pull_request.head.sha
+                ref: ref
               })
               
               if (Array.isArray(contentResp.data) || !contentResp.data?.content) return
@@ -332,7 +353,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             
             const LABEL_URL_ALL_REACHABLE = 'URL全部可达'
             const LABEL_URL_PARTIAL_UNREACHABLE = '部分URL不可达'
@@ -363,7 +389,7 @@ jobs:
                 try {
                   const contentResp = await github.rest.repos.getContent({
                     owner, repo, path: file.filename,
-                    ref: context.payload.pull_request.head.sha
+                    ref: ref
                   })
                   
                   if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
@@ -496,7 +522,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             const commentBody = context.payload.comment?.body || ''
             
             const LABEL_OWNERSHIP_VERIFY = '验证网站所有权'
@@ -539,9 +570,9 @@ jobs:
                 for (const file of files) {
                   try {
                     const contentResp = await github.rest.repos.getContent({
-                      owner, repo, path: file.filename,
-                      ref: context.payload.pull_request.head.sha
-                    })
+                        owner, repo, path: file.filename,
+                        ref: ref
+                      })
                     
                     if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
                     
@@ -646,7 +677,12 @@ jobs:
           script: |
             const owner = context.repo.owner
             const repo = context.repo.repo
-            const pull_number = context.payload.pull_request.number
+            const pull_number = context.payload.pull_request?.number || context.payload.issue?.number || github.event.inputs?.pr_number
+            let ref = context.payload.pull_request?.head?.sha
+            if (!ref && pull_number) {
+              const prInfo = await github.rest.pulls.get({ owner, repo, pull_number })
+              ref = prInfo.data.head.sha
+            }
             
             try {
               // 获取PR信息以提取站点名称
@@ -674,7 +710,7 @@ jobs:
                   const firstFile = files[0]
                   const contentResp = await github.rest.repos.getContent({
                     owner, repo, path: firstFile.filename,
-                    ref: context.payload.pull_request.head.sha
+                    ref: ref
                   })
                   
                   if (!Array.isArray(contentResp.data) && contentResp.data?.content) {
@@ -859,6 +895,19 @@ jobs:
                 owner, repo, issue_number,
                 body: confirmMessage
               })
+
+              // 触发工作流重新运行主流程（通过 workflow_dispatch）
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner, repo,
+                  workflow_id: 'pr-check.yml',
+                  ref: 'main',
+                  inputs: { pr_number: String(issue_number) }
+                })
+                core.info('已通过 workflow_dispatch 触发主流程')
+              } catch (e) {
+                core.warning(`触发主流程失败: ${e.message}`)
+              }
               
             } catch (e) {
               core.error(`处理评论时出错: ${e.message}`)
