@@ -478,13 +478,19 @@ jobs:
                 '-A', 'Mozilla/5.0 (compatible; FriendLinkBot/1.0)',
                 '--max-time', '15',
                 '--retry', '2',
+                '-w', '\n__STATUS__%{http_code}',
                 url
               ], { encoding: 'utf8', timeout: 60000 })
               if (r.status !== 0) {
                 core.warning(`curl 抓取 ${url} 失败，exit=${r.status}`)
-                return { ok: false, html: '' }
+                return { ok: false, html: '', httpCode: 0 }
               }
-              return { ok: true, html: r.stdout }
+              const out = r.stdout
+              const marker = '\n__STATUS__'
+              const idx = out.lastIndexOf(marker)
+              const html = idx >= 0 ? out.slice(0, idx) : out
+              const httpCode = idx >= 0 ? parseInt(out.slice(idx + marker.length), 10) || 0 : 0
+              return { ok: true, html, httpCode }
             }
 
             if (shouldVerify) {
@@ -545,14 +551,15 @@ jobs:
                 const fallbackUri = await getFallbackUri(path)
                 if (fallbackUri) {
                   core.info(`检查当前状态 fallback_uri: ${fallbackUri}`)
-                  const { ok, html } = fetchAndCheck(fallbackUri)
+                  const { ok, html, httpCode } = fetchAndCheck(fallbackUri)
                   if (!ok) {
                     currentStatus = `> **当前检测状态**：⚠️ 无法访问 \`${fallbackUri}\`，请确认页面可正常访问。`
                   } else {
                     const found = OWNERSHIP_LINKS.find(link => html.includes(link))
+                    const codeStr = httpCode ? ` (HTTP ${httpCode})` : ''
                     currentStatus = found
-                      ? `> **当前检测状态**：✅ 已在 \`${fallbackUri}\` 检测到链接 \`${found}\`，可直接回复 \`准备完毕\` 触发验证。`
-                      : `> **当前检测状态**：❌ 已检测 \`${fallbackUri}\`，页面中尚未发现指定链接，请添加后回复 \`准备完毕\`。`
+                      ? `> **当前检测状态**：✅ 已在 \`${fallbackUri}\` 检测到链接 \`${found}\`${codeStr}，可直接回复 \`准备完毕\` 触发验证。`
+                      : `> **当前检测状态**：❌ 已检测 \`${fallbackUri}\`${codeStr}，页面中尚未发现指定链接，请添加后回复 \`准备完毕\`。`
                   }
                   break
                 }
