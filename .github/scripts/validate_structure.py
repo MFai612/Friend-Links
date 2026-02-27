@@ -85,6 +85,16 @@ def validate_file(file_path: str) -> list[str]:
         elif not str(val).strip():
             errors.append("DATA['avatar_uri'] 若存在则不能为空字符串")
 
+    # Check optional fallback_uri field (used for ownership verification; if present must be a non-empty string)
+    if "fallback_uri" in fields:
+        val = fields["fallback_uri"]
+        if val is None:
+            errors.append("DATA['fallback_uri'] 的值不是字符串字面量，无法验证")
+        elif not isinstance(val, str):
+            errors.append(f"DATA['fallback_uri'] 必须是字符串类型，当前类型: {type(val).__name__}")
+        elif not str(val).strip():
+            errors.append("DATA['fallback_uri'] 若存在则不能为空字符串")
+
     return errors
 
 
