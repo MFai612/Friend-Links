@@ -506,6 +506,7 @@ jobs:
 
                 core.info(`检查 fallback_uri: ${fallbackUri}`)
                 const { ok, html } = fetchAndCheck(fallbackUri)
+                core.info(`[源码] ${fallbackUri}\n${html}`)
                 if (!ok) {
                   failReason = `无法访问 \`fallback_uri\`：${fallbackUri}`
                   continue
@@ -552,6 +553,7 @@ jobs:
                 if (fallbackUri) {
                   core.info(`检查当前状态 fallback_uri: ${fallbackUri}`)
                   const { ok, html, httpCode } = fetchAndCheck(fallbackUri)
+                  core.info(`[源码] ${fallbackUri}\n${html}`)
                   if (!ok) {
                     currentStatus = `> **当前检测状态**：⚠️ 无法访问 \`${fallbackUri}\`，请确认页面可正常访问。`
                   } else {
