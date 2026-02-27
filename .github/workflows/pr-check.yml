@@ -1,33 +1,114 @@
-name: PR Check
+name: 友链申请验证与合并流程
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
 
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: friend-link-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
-  validate-and-process:
-    # 触发条件：PR创建/更新 或 PR评论包含关键词
-    if: >
-      (github.event_name == 'pull_request') ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != null &&
-       (contains(github.event.comment.body, '已修改') ||
-        contains(github.event.comment.body, '准备完毕')))
+  triage:
+    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      pull-requests: write
-      contents: write
-    
     steps:
-      # ---------------------------------------------------------------
-      # 环境初始化阶段
-      # ---------------------------------------------------------------
+      - name: 初始化和标签管理
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            
+            // 定义标签常量
+            const LABEL_FRIEND_REQUEST = '友链申请中'
+            const LABEL_STRUCTURE_VALID = '文件结构符合'
+            const LABEL_STRUCTURE_INVALID = '文件结构不一致'
+            const LABEL_URL_ALL_REACHABLE = 'URL全部可达'
+            const LABEL_URL_PARTIAL_UNREACHABLE = '部分URL不可达'
+            const LABEL_URL_ALL_UNREACHABLE = 'URL全部不可达'
+            const LABEL_OWNERSHIP_VERIFY = '验证网站所有权'
+            const LABEL_OWNERSHIP_VERIFIED = '所有权已验证'
+            
+            // 确保标签存在
+            async function ensureLabel(name, color = 'ededed') {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name })
+              } catch (e) {
+                if (e.status !== 404) throw e
+                await github.rest.issues.createLabel({
+                  owner, repo, name, color
+                })
+              }
+            }
+            
+            // 为所有必要标签创建标签
+            for (const name of [
+              LABEL_FRIEND_REQUEST,
+              LABEL_STRUCTURE_VALID,
+              LABEL_STRUCTURE_INVALID,
+              LABEL_URL_ALL_REACHABLE,
+              LABEL_URL_PARTIAL_UNREACHABLE,
+              LABEL_URL_ALL_UNREACHABLE,
+              LABEL_OWNERSHIP_VERIFY,
+              LABEL_OWNERSHIP_VERIFIED
+            ]) {
+              await ensureLabel(name)
+            }
+            
+            // 获取变更文件列表
+            async function listAllFiles() {
+              const files = []
+              for await (const res of github.paginate.iterator(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              )) {
+                for (const f of res.data) files.push(f)
+              }
+              return files
+            }
+            
+            const files = await listAllFiles()
+            
+            // 检查文件变更是否符合要求
+            const validChanges = files.every(file => 
+              file.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+              file.filename !== 'src/data/__init__.py'
+            )
+            
+            if (!validChanges) {
+              core.info('检测到无效文件变更，跳过处理')
+              return
+            }
+            
+            // 添加初始标签
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: pull_number,
+              labels: [LABEL_FRIEND_REQUEST]
+            })
+            
+            core.info('已添加初始标签并完成初步筛选')
+    
+  validate_structure:
+    needs: triage
+    if: >
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, '友链申请中')
+    runs-on: ubuntu-latest
+    steps:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: 设置Python环境
@@ -39,550 +120,664 @@ jobs:
         run: |
           pip install requests
 
-      # ---------------------------------------------------------------
-      # 阶段0：解析PR编号
-      # ---------------------------------------------------------------
-      - name: 获取PR编号
-        id: pr-info
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-          else
-            PR_NUMBER="${{ github.event.issue.number }}"
-          fi
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "解析到PR编号: ${PR_NUMBER}"
-
-      # ---------------------------------------------------------------
-      # 阶段1：文件变更检查
-      # ---------------------------------------------------------------
-      - name: 检查文件变更
-        id: file-change-check
-        timeout-minutes: 3
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          
-          # 使用GitHub API获取变更文件列表
-          CHANGED_FILES=$(curl -sf \
-            -H "Authorization: Bearer $PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/files" \
-            | jq -r '.[].filename')
-          
-          echo "=== 变更的文件 ==="
-          echo "$CHANGED_FILES"
-          echo "=================="
-          
-          # 验证变更是否符合要求
-          VALID_CHANGE="true"
-          INVALID_FILES_FOUND="false"
-          
-          while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            
-            # 检查是否为src/data/目录下的.py文件，且不是__init__.py
-            if [[ ! "$file" =~ ^src/data/[^/]+\.py$ ]] || \
-               [[ "$file" == "src/data/__init__.py" ]]; then
-              VALID_CHANGE="false"
-              INVALID_FILES_FOUND="true"
-              echo "❌ 发现无效文件: ${file}"
-            else
-              echo "✅ 有效文件: ${file}"
-            fi
-          done <<< "$CHANGED_FILES"
-          
-          echo "valid_change=${VALID_CHANGE}" >> "$GITHUB_OUTPUT"
-          echo "invalid_files_found=${INVALID_FILES_FOUND}" >> "$GITHUB_OUTPUT"
-          {
-            echo "changed_files<<__FILELIST__"
-            echo "$CHANGED_FILES"
-            echo "__FILELIST__"
-          } >> "$GITHUB_OUTPUT"
-          
-          if [[ "$VALID_CHANGE" == "true" ]]; then
-            echo "✓ 所有变更文件均符合要求"
-          else
-            echo "! 检测到不符合要求的文件变更"
-          fi
-
-      # 如果文件变更不符合要求，直接退出工作流程
-      - name: 终止无效变更的工作流程
-        if: steps.file-change-check.outputs.invalid_files_found == 'true'
-        run: |
-          echo "::notice::检测到无效文件变更，工作流程终止"
-          exit 0
-
-      # 为符合条件的PR添加初始标签
-      - name: 添加初始标签
-        if: steps.file-change-check.outputs.valid_change == 'true'
-        timeout-minutes: 2
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          
-          # 添加"友链申请中"标签
-          curl -sf -X POST \
-            -H "Authorization: Bearer $PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-            -d '{"labels":["友链申请中"]}' > /dev/null || true
-          
-          echo "✓ 已添加'友链申请中'标签"
-
-      # ---------------------------------------------------------------
-      # 阶段2：文件结构验证
-      # ---------------------------------------------------------------
       - name: 验证文件结构
-        id: structure-validation
-        if: steps.file-change-check.outputs.valid_change == 'true'
-        timeout-minutes: 3
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
-          COMMENT_TRIGGER="${{ github.event.comment.body }}"
-          
-          # 标签和评论辅助函数
-          add_label() {
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-              -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
-          }
-          
-          remove_label() {
-            local encoded
-            encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
-            curl -sf -X DELETE \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
-          }
-          
-          post_comment() {
-            local body_json
-            body_json=$(jq -n --arg b "$1" '{"body":$b}')
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-              -d "$body_json" > /dev/null || true
-          }
-          
-          # 判断是否由"已修改"关键词触发重新验证
-          TRIGGERED_BY_MODIFY=false
-          if [[ "$COMMENT_TRIGGER" == *"已修改"* ]]; then
-            TRIGGERED_BY_MODIFY=true
-            echo "🔄 由'已修改'关键词触发重新验证"
-          fi
-          
-          VALID_STRUCTURE="true"
-          ERROR_BLOCK=""
-          
-          # 验证每个变更的文件
-          while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            echo "--- 验证文件: ${file} ---"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
             
-            OUTPUT=$(python3 .github/scripts/validate_structure.py "$file" 2>&1)
-            EXIT_CODE=$?
-            echo "$OUTPUT"
+            const LABEL_STRUCTURE_VALID = '文件结构符合'
+            const LABEL_STRUCTURE_INVALID = '文件结构不一致'
             
-            if [[ $EXIT_CODE -ne 0 ]]; then
-              VALID_STRUCTURE="false"
-              ERRORS=$(echo "$OUTPUT" | grep "^ERROR:" | sed 's/^ERROR: /- /')
-              ERROR_BLOCK+="**\`${file}\`**:\n${ERRORS}\n\n"
-            fi
-          done <<< "$CHANGED_FILES"
-          
-          echo "valid_structure=${VALID_STRUCTURE}" >> "$GITHUB_OUTPUT"
-          {
-            echo "error_messages<<__ERRMSG__"
-            printf '%b' "$ERROR_BLOCK"
-            echo ""
-            echo "__ERRMSG__"
-          } >> "$GITHUB_OUTPUT"
-          
-          # 处理验证结果
-          if [[ "$VALID_STRUCTURE" == "true" ]]; then
-            add_label "文件结构符合"
-            remove_label "文件结构不一致"
-            echo "✓ 所有文件通过结构验证"
-          else
-            add_label "文件结构不一致"
-            remove_label "文件结构符合"
+            // 获取变更文件
+            const files = []
+            for await (const res of github.paginate.iterator(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            )) {
+              for (const f of res.data) {
+                if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+                    f.filename !== 'src/data/__init__.py') {
+                  files.push(f)
+                }
+              }
+            }
             
-            # 只有在首次失败或由"已修改"触发时才发送评论
-            if [[ "$TRIGGERED_BY_MODIFY" == "true" ]] || [[ "$COMMENT_TRIGGER" != *"已修改"* ]]; then
-              COMMENT=$(printf '## ❌ 文件结构验证失败\n\n发现以下问题：\n\n%b请按照指定模板修改文件结构，确保：\n1. 文件为 `.py` 后缀\n2. 包含名为 `DATA` 的字典对象\n3. `DATA` 字典包含必填字段：`name`、`description`、`uri`\n4. 所有字段值为非空字符串\n5. 若存在 `avatar_uri` 字段，其值必须为非空字符串\n\n修改完成后，请在 PR 评论区回复 `已修改` 以重新触发验证。' "$ERROR_BLOCK")
-              post_comment "$COMMENT"
-            fi
-            echo "! 文件结构验证失败"
-          fi
+            if (files.length === 0) return
+            
+            let validStructure = true
+            let errorMessages = []
+            
+            // 验证每个文件
+            for (const file of files) {
+              try {
+                const contentResp = await github.rest.repos.getContent({
+                  owner, repo, path: file.filename,
+                  ref: context.payload.pull_request.head.sha
+                })
+                
+                if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
+                
+                const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
+                const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
+                require('fs').writeFileSync(tempFileName, content)
+                
+                const { spawnSync } = require('child_process')
+                const result = spawnSync('python3', ['.github/scripts/validate_structure.py', tempFileName], {
+                  encoding: 'utf8', timeout: 30000
+                })
+                
+                if (result.status !== 0) {
+                  validStructure = false
+                  const errors = result.stdout.split('\n')
+                    .filter(line => line.startsWith('ERROR:'))
+                    .map(line => line.replace('ERROR: ', ''))
+                  errorMessages.push(`**\`${file.filename}\`**:\n${errors.map(e => `- ${e}`).join('\n')}\n`)
+                }
+              } catch (e) {
+                core.warning(`验证文件 ${file.filename} 时出错: ${e.message}`)
+              }
+            }
+            
+            // 更新标签
+            try {
+              if (validStructure) {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pull_number,
+                  labels: [LABEL_STRUCTURE_VALID]
+                })
+                // 移除无效标签（如果存在）
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number: pull_number,
+                    name: LABEL_STRUCTURE_INVALID
+                  })
+                } catch {}
+                core.info('文件结构验证通过')
+              } else {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pull_number,
+                  labels: [LABEL_STRUCTURE_INVALID]
+                })
+                // 移除有效标签（如果存在）
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number: pull_number,
+                    name: LABEL_STRUCTURE_VALID
+                  })
+                } catch {}
+                
+                // 发送错误评论
+                const commentBody = [
+                  '## ❌ 文件结构验证失败',
+                  '',
+                  '发现以下问题：',
+                  '',
+                  ...errorMessages,
+                  '请按照指定模板修改文件结构，确保：',
+                  '1. 文件为 `.py` 后缀',
+                  '2. 包含名为 `DATA` 的字典对象',
+                  '3. `DATA` 字典包含必填字段：`name`、`description`、`uri`',
+                  '4. 所有字段值为非空字符串',
+                  '5. 若存在 `avatar_uri` 字段，其值必须为非空字符串',
+                  '',
+                  '修改完成后，请在 PR 评论区回复 `已修改` 以重新触发验证。'
+                ].join('\n')
+                
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: commentBody
+                })
+                core.info('文件结构验证失败，已发送评论')
+              }
+            } catch (e) {
+              core.error(`标签操作失败: ${e.message}`)
+            }
 
-      # ---------------------------------------------------------------
-      # 阶段3：PR标题更新
-      # ---------------------------------------------------------------
+  update_title:
+    needs: validate_structure
+    if: >
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, '文件结构符合')
+    runs-on: ubuntu-latest
+    steps:
       - name: 更新PR标题
-        id: update-title
-        if: >
-          steps.file-change-check.outputs.valid_change == 'true' &&
-          steps.structure-validation.outputs.valid_structure == 'true'
-        timeout-minutes: 2
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
-          
-          # 获取第一个有效的Python文件
-          FIRST_FILE=$(echo "$CHANGED_FILES" | grep -E '\.py$' | head -1)
-          
-          # 提取网站名称
-          SITE_NAME=$(python3 .github/scripts/extract_field.py "$FIRST_FILE" name 2>/dev/null || echo "")
-          
-          if [[ -z "$SITE_NAME" ]]; then
-            echo "::warning::无法提取网站名称，跳过标题更新"
-            echo "site_name=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          
-          NEW_TITLE="友链：${SITE_NAME}"
-          
-          # 获取当前标题
-          CURRENT_TITLE=$(curl -sf \
-            -H "Authorization: Bearer $PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" | jq -r '.title')
-          
-          # 只有当标题不同时才更新（幂等性）
-          if [[ "$CURRENT_TITLE" != "$NEW_TITLE" ]]; then
-            TITLE_JSON=$(jq -n --arg t "$NEW_TITLE" '{"title":$t}')
-            curl -sf -X PATCH \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" \
-              -d "$TITLE_JSON" > /dev/null
-            echo "✓ PR标题已更新为: ${NEW_TITLE}"
-          else
-            echo "✓ PR标题已经是正确格式，无需更新"
-          fi
-          
-          echo "site_name=${SITE_NAME}" >> "$GITHUB_OUTPUT"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            
+            try {
+              // 获取变更文件
+              const files = []
+              for await (const res of github.paginate.iterator(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              )) {
+                for (const f of res.data) {
+                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+                      f.filename !== 'src/data/__init__.py') {
+                    files.push(f)
+                  }
+                }
+              }
+              
+              if (files.length === 0) return
+              
+              // 获取第一个文件的内容并提取name字段
+              const firstFile = files[0]
+              const contentResp = await github.rest.repos.getContent({
+                owner, repo, path: firstFile.filename,
+                ref: context.payload.pull_request.head.sha
+              })
+              
+              if (Array.isArray(contentResp.data) || !contentResp.data?.content) return
+              
+              const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
+              const tempFileName = `/tmp/${firstFile.filename.replace(/\//g, '_')}`
+              require('fs').writeFileSync(tempFileName, content)
+              
+              const { spawnSync } = require('child_process')
+              const result = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'name'], {
+                encoding: 'utf8', timeout: 10000
+              })
+              
+              if (result.status === 0) {
+                const siteName = result.stdout.trim()
+                if (siteName) {
+                  const newTitle = `友链：${siteName}`
+                  const currentTitle = context.payload.pull_request.title
+                  
+                  // 只有当标题不同时才更新（幂等性）
+                  if (currentTitle !== newTitle) {
+                    await github.rest.pulls.update({
+                      owner, repo, pull_number,
+                      title: newTitle
+                    })
+                    core.info(`PR标题已更新为: ${newTitle}`)
+                  } else {
+                    core.info('PR标题已经是正确格式，无需更新')
+                  }
+                }
+              }
+            } catch (e) {
+              core.warning(`更新PR标题时出错: ${e.message}`)
+            }
 
-      # ---------------------------------------------------------------
-      # 阶段4：URL可达性验证
-      # ---------------------------------------------------------------
+  validate_urls:
+    needs: update_title
+    if: >
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, '文件结构符合')
+    runs-on: ubuntu-latest
+    steps:
       - name: 验证URL可达性
-        id: url-validation
-        if: >
-          steps.file-change-check.outputs.valid_change == 'true' &&
-          steps.structure-validation.outputs.valid_structure == 'true'
-        timeout-minutes: 5
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
-          COMMENT_TRIGGER="${{ github.event.comment.body }}"
-          
-          # 辅助函数
-          add_label() {
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-              -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
-          }
-          
-          remove_label() {
-            local encoded
-            encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
-            curl -sf -X DELETE \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
-          }
-          
-          post_comment() {
-            local body_json
-            body_json=$(jq -n --arg b "$1" '{"body":$b}')
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-              -d "$body_json" > /dev/null || true
-          }
-          
-          # 判断是否由"准备完毕"关键词触发重新验证
-          TRIGGERED_BY_READY=false
-          if [[ "$COMMENT_TRIGGER" == *"准备完毕"* ]]; then
-            TRIGGERED_BY_READY=true
-            echo "🔄 由'准备完毕'关键词触发URL重新验证"
-          fi
-          
-          ALL_URI_REACHABLE="true"
-          UNREACHABLE_URIS=""
-          UNREACHABLE_AVATAR_URIS=""
-          
-          # 验证每个文件中的URL
-          while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
             
-            # 验证主URL (uri)
-            URI=$(python3 .github/scripts/extract_field.py "$file" uri 2>/dev/null || echo "")
-            if [[ -n "$URI" ]]; then
-              echo "🔍 检查主URL: ${URI}"
-              if ! python3 .github/scripts/check_url.py "$URI"; then
-                ALL_URI_REACHABLE="false"
-                UNREACHABLE_URIS+="- \`${URI}\` (来自 \`${file}\`)\n"
-              fi
-            fi
+            const LABEL_URL_ALL_REACHABLE = 'URL全部可达'
+            const LABEL_URL_PARTIAL_UNREACHABLE = '部分URL不可达'
             
-            # 验证头像URL (avatar_uri)
-            AVATAR_URI=$(python3 .github/scripts/extract_field.py "$file" avatar_uri 2>/dev/null || echo "")
-            if [[ -n "$AVATAR_URI" ]]; then
-              echo "🔍 检查头像URL: ${AVATAR_URI}"
-              if ! python3 .github/scripts/check_url.py "$AVATAR_URI"; then
-                UNREACHABLE_AVATAR_URIS+="- \`${AVATAR_URI}\` (来自 \`${file}\`)\n"
-              fi
-            fi
-          done <<< "$CHANGED_FILES"
-          
-          echo "all_uri_reachable=${ALL_URI_REACHABLE}" >> "$GITHUB_OUTPUT"
-          
-          # 清理旧的URL相关标签
-          remove_label "URL全部可达"
-          remove_label "部分URL不可达"
-          remove_label "URL全部不可达"
-          
-          # 处理验证结果
-          if [[ "$ALL_URI_REACHABLE" == "true" ]]; then
-            add_label "URL全部可达"
-            echo "✓ 所有URL均可访问"
-          else
-            add_label "部分URL不可达"
-            
-            # 只有在首次失败或由"准备完毕"触发时才发送评论
-            if [[ "$TRIGGERED_BY_READY" == "true" ]] || [[ "$COMMENT_TRIGGER" != *"准备完毕"* ]]; then
-              COMMENT=$(printf '## ⚠️ URL可达性验证失败\n\n以下 URL 不可达：\n\n%b\n请检查并修改相关URL，确保它们可以正常访问。\n\n修改完成后，请在 PR 评论区回复 `准备完毕` 以重新触发验证。' "$UNREACHABLE_URIS")
-              post_comment "$COMMENT"
-            fi
-            echo "! 部分URL不可达"
-          fi
-          
-          # 处理头像URL警告（不影响合并）
-          if [[ -n "$UNREACHABLE_AVATAR_URIS" ]]; then
-            AVATAR_COMMENT=$(printf '## 📝 头像 URL 警告\n\n以下头像 URL 目前无法访问，建议检查：\n\n%b\n友链申请仍会继续处理，但建议确保头像 URL 可正常访问。' "$UNREACHABLE_AVATAR_URIS")
-            post_comment "$AVATAR_COMMENT"
-            echo "! 部分头像URL不可达（警告）"
-          fi
+            try {
+              // 获取变更文件
+              const files = []
+              for await (const res of github.paginate.iterator(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              )) {
+                for (const f of res.data) {
+                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+                      f.filename !== 'src/data/__init__.py') {
+                    files.push(f)
+                  }
+                }
+              }
+              
+              if (files.length === 0) return
+              
+              let allUrlsReachable = true
+              let unreachableUris = []
+              let unreachableAvatarUris = []
+              
+              // 验证每个文件中的URL
+              for (const file of files) {
+                try {
+                  const contentResp = await github.rest.repos.getContent({
+                    owner, repo, path: file.filename,
+                    ref: context.payload.pull_request.head.sha
+                  })
+                  
+                  if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
+                  
+                  const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
+                  const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
+                  require('fs').writeFileSync(tempFileName, content)
+                  
+                  const { spawnSync } = require('child_process')
+                  
+                  // 验证主URL
+                  const uriResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'uri'], {
+                    encoding: 'utf8', timeout: 10000
+                  })
+                  
+                  if (uriResult.status === 0) {
+                    const uri = uriResult.stdout.trim()
+                    if (uri) {
+                      core.info(`检查主URL: ${uri}`)
+                      const checkResult = spawnSync('python3', ['.github/scripts/check_url.py', uri], {
+                        encoding: 'utf8', timeout: 15000
+                      })
+                      
+                      if (checkResult.status !== 0) {
+                        allUrlsReachable = false
+                        unreachableUris.push(`- \`${uri}\` (来自 \`${file.filename}\`)`)
+                      }
+                    }
+                  }
+                  
+                  // 验证头像URL
+                  const avatarResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'avatar_uri'], {
+                    encoding: 'utf8', timeout: 10000
+                  })
+                  
+                  if (avatarResult.status === 0) {
+                    const avatarUri = avatarResult.stdout.trim()
+                    if (avatarUri) {
+                      core.info(`检查头像URL: ${avatarUri}`)
+                      const checkResult = spawnSync('python3', ['.github/scripts/check_url.py', avatarUri], {
+                        encoding: 'utf8', timeout: 15000
+                      })
+                      
+                      if (checkResult.status !== 0) {
+                        unreachableAvatarUris.push(`- \`${avatarUri}\` (来自 \`${file.filename}\`)`)
+                      }
+                    }
+                  }
+                } catch (e) {
+                  core.warning(`验证文件 ${file.filename} 中的URL时出错: ${e.message}`)
+                }
+              }
+              
+              // 更新标签
+              try {
+                // 清理旧标签
+                for (const label of [LABEL_URL_ALL_REACHABLE, LABEL_URL_PARTIAL_UNREACHABLE]) {
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner, repo, issue_number: pull_number, name: label
+                    })
+                  } catch {}
+                }
+                
+                if (allUrlsReachable) {
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: pull_number,
+                    labels: [LABEL_URL_ALL_REACHABLE]
+                  })
+                  core.info('所有URL均可访问')
+                } else {
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: pull_number,
+                    labels: [LABEL_URL_PARTIAL_UNREACHABLE]
+                  })
+                  
+                  // 发送错误评论
+                  const commentBody = [
+                    '## ⚠️ URL可达性验证失败',
+                    '',
+                    '以下 URL 不可达：',
+                    '',
+                    ...unreachableUris,
+                    '',
+                    '请检查并修改相关URL，确保它们可以正常访问。',
+                    '',
+                    '修改完成后，请在 PR 评论区回复 `准备完毕` 以重新触发验证。'
+                  ].join('\n')
+                  
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: pull_number,
+                    body: commentBody
+                  })
+                  core.info('部分URL不可达，已发送评论')
+                }
+                
+                // 处理头像URL警告
+                if (unreachableAvatarUris.length > 0) {
+                  const avatarCommentBody = [
+                    '## 📝 头像 URL 警告',
+                    '',
+                    '以下头像 URL 目前无法访问，建议检查：',
+                    '',
+                    ...unreachableAvatarUris,
+                    '',
+                    '友链申请仍会继续处理，但建议确保头像 URL 可正常访问。'
+                  ].join('\n')
+                  
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: pull_number,
+                    body: avatarCommentBody
+                  })
+                  core.info('部分头像URL不可达，已发送警告')
+                }
+              } catch (e) {
+                core.error(`标签操作失败: ${e.message}`)
+              }
+            } catch (e) {
+              core.error(`URL验证失败: ${e.message}`)
+            }
 
-      # ---------------------------------------------------------------
-      # 阶段5：网站所有权验证
-      # ---------------------------------------------------------------
+  verify_ownership:
+    needs: validate_urls
+    if: >
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, 'URL全部可达')
+    runs-on: ubuntu-latest
+    steps:
       - name: 验证网站所有权
-        id: ownership-check
-        if: >
-          steps.file-change-check.outputs.valid_change == 'true' &&
-          steps.structure-validation.outputs.valid_structure == 'true' &&
-          steps.url-validation.outputs.all_uri_reachable == 'true'
-        timeout-minutes: 5
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          CHANGED_FILES="${{ steps.file-change-check.outputs.changed_files }}"
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          
-          # 辅助函数
-          add_label() {
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-              -d "$(jq -n --arg l "$1" '{"labels":[$l]}')" > /dev/null || true
-          }
-          
-          remove_label() {
-            local encoded
-            encoded=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")
-            curl -sf -X DELETE \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels/$encoded" > /dev/null || true
-          }
-          
-          post_comment() {
-            local body_json
-            body_json=$(jq -n --arg b "$1" '{"body":$b}')
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-              -d "$body_json" > /dev/null || true
-          }
-          
-          # 检查是否已经通过所有权验证
-          CURRENT_LABELS=$(curl -sf \
-            -H "Authorization: Bearer $PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-            | jq -r '[.[].name] | join(",")' 2>/dev/null || echo "")
-          
-          if [[ "$CURRENT_LABELS" == *"所有权已验证"* ]]; then
-            echo "✓ 所有权已验证，跳过此阶段"
-            echo "verification_passed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          
-          # 判断触发方式
-          if [[ "$COMMENT_BODY" == *"准备完毕"* ]]; then
-            echo "🔄 由'准备完毕'关键词触发所有权验证..."
-            VERIFICATION_PASSED="false"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
+            const commentBody = context.payload.comment?.body || ''
             
-            # 执行所有权验证
-            while IFS= read -r file; do
-              [[ -z "$file" ]] && continue
-              URI=$(python3 .github/scripts/extract_field.py "$file" uri 2>/dev/null || echo "")
-              if [[ -n "$URI" ]]; then
-                echo "🔍 验证所有权: ${URI}"
-                RESULT=$(python3 .github/scripts/check_ownership.py "$URI" 2>&1)
-                EXIT_CODE=$?
-                echo "$RESULT"
-                if [[ $EXIT_CODE -eq 0 ]]; then
-                  VERIFICATION_PASSED="true"
-                  break
-                fi
-              fi
-            done <<< "$CHANGED_FILES"
+            const LABEL_OWNERSHIP_VERIFY = '验证网站所有权'
+            const LABEL_OWNERSHIP_VERIFIED = '所有权已验证'
             
-            echo "verification_passed=${VERIFICATION_PASSED}" >> "$GITHUB_OUTPUT"
-            
-            if [[ "$VERIFICATION_PASSED" == "true" ]]; then
-              remove_label "验证网站所有权"
-              add_label "所有权已验证"
-              echo "✓ 网站所有权验证通过"
-            else
-              post_comment "## ❌ 网站所有权验证失败\n\n未能在您的网站 HTML 源码中检测到指向以下任一 URL 的链接：\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n请确保链接包含在网站页面的 HTML 中，然后在 PR 评论区回复 \`准备完毕\` 以重新触发验证。"
-              echo "! 所有权验证失败"
-            fi
-          else
-            echo "ℹ️ 首次执行 - 发送所有权验证说明..."
-            echo "verification_passed=false" >> "$GITHUB_OUTPUT"
-            add_label "验证网站所有权"
-            post_comment "## 🔗 网站所有权验证\n\n为了确认您是该网站的所有者，请在您的网站页面中添加指向以下任一 URL 的链接：\n\n- \`https://waterspo.top\`\n- \`https://www.waterspo.top\`\n\n完成操作后，请在 PR 评论区回复 \`准备完毕\` 以触发所有权验证。"
-          fi
+            try {
+              // 检查是否已经通过验证
+              const currentIssue = await github.rest.issues.get({
+                owner, repo, issue_number: pull_number
+              })
+              
+              const currentLabels = new Set((currentIssue.data.labels || []).map(l => l.name))
+              
+              if (currentLabels.has(LABEL_OWNERSHIP_VERIFIED)) {
+                core.info('所有权已验证，跳过此阶段')
+                return
+              }
+              
+              // 判断触发方式
+              if (commentBody.includes('准备完毕')) {
+                core.info('由"准备完毕"关键词触发所有权验证...')
+                
+                // 获取变更文件
+                const files = []
+                for await (const res of github.paginate.iterator(
+                  github.rest.pulls.listFiles,
+                  { owner, repo, pull_number, per_page: 100 }
+                )) {
+                  for (const f of res.data) {
+                    if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+                        f.filename !== 'src/data/__init__.py') {
+                      files.push(f)
+                    }
+                  }
+                }
+                
+                let verificationPassed = false
+                
+                // 验证每个文件
+                for (const file of files) {
+                  try {
+                    const contentResp = await github.rest.repos.getContent({
+                      owner, repo, path: file.filename,
+                      ref: context.payload.pull_request.head.sha
+                    })
+                    
+                    if (Array.isArray(contentResp.data) || !contentResp.data?.content) continue
+                    
+                    const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
+                    const tempFileName = `/tmp/${file.filename.replace(/\//g, '_')}`
+                    require('fs').writeFileSync(tempFileName, content)
+                    
+                    const { spawnSync } = require('child_process')
+                    const uriResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'uri'], {
+                      encoding: 'utf8', timeout: 10000
+                    })
+                    
+                    if (uriResult.status === 0) {
+                      const uri = uriResult.stdout.trim()
+                      if (uri) {
+                        core.info(`验证所有权: ${uri}`)
+                        const checkResult = spawnSync('python3', ['.github/scripts/check_ownership.py', uri], {
+                          encoding: 'utf8', timeout: 20000
+                        })
+                        
+                        if (checkResult.status === 0) {
+                          verificationPassed = true
+                          break
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    core.warning(`验证文件 ${file.filename} 时出错: ${e.message}`)
+                  }
+                }
+                
+                if (verificationPassed) {
+                  // 移除验证标签，添加已验证标签
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner, repo, issue_number: pull_number,
+                      name: LABEL_OWNERSHIP_VERIFY
+                    })
+                  } catch {}
+                  
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: pull_number,
+                    labels: [LABEL_OWNERSHIP_VERIFIED]
+                  })
+                  core.info('网站所有权验证通过')
+                } else {
+                  // 发送失败评论
+                  const failComment = [
+                    '## ❌ 网站所有权验证失败',
+                    '',
+                    '未能在您的网站 HTML 源码中检测到指向以下任一 URL 的链接：',
+                    '- `https://waterspo.top`',
+                    '- `https://www.waterspo.top`',
+                    '',
+                    '请确保链接包含在网站页面的 HTML 中，然后在 PR 评论区回复 `准备完毕` 以重新触发验证。'
+                  ].join('\n')
+                  
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: pull_number,
+                    body: failComment
+                  })
+                  core.info('所有权验证失败，已发送评论')
+                }
+              } else {
+                core.info('首次执行 - 发送所有权验证说明...')
+                
+                // 添加验证标签
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: pull_number,
+                  labels: [LABEL_OWNERSHIP_VERIFY]
+                })
+                
+                // 发送验证说明
+                const instructionComment = [
+                  '## 🔗 网站所有权验证',
+                  '',
+                  '为了确认您是该网站的所有者，请在您的网站页面中添加指向以下任一 URL 的链接：',
+                  '',
+                  '- `https://waterspo.top`',
+                  '- `https://www.waterspo.top`',
+                  '',
+                  '完成操作后，请在 PR 评论区回复 `准备完毕` 以触发所有权验证。'
+                ].join('\n')
+                
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pull_number,
+                  body: instructionComment
+                })
+              }
+            } catch (e) {
+              core.error(`所有权验证失败: ${e.message}`)
+            }
 
-      # ---------------------------------------------------------------
-      # 阶段6：自动合并
-      # ---------------------------------------------------------------
-      - name: 条件检查与自动合并
-        if: >
-          steps.file-change-check.outputs.valid_change == 'true' &&
-          steps.structure-validation.outputs.valid_structure == 'true' &&
-          steps.url-validation.outputs.all_uri_reachable == 'true' &&
-          steps.ownership-check.outputs.verification_passed == 'true'
-        timeout-minutes: 3
-        env:
-          PAT: ${{ secrets.PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
-          SITE_NAME="${{ steps.update-title.outputs.site_name }}"
-          
-          post_comment() {
-            local body_json
-            body_json=$(jq -n --arg b "$1" '{"body":$b}')
-            curl -sf -X POST \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-              -d "$body_json" > /dev/null || true
-          }
-          
-          # 获取当前所有标签
-          LABELS=$(curl -sf \
-            -H "Authorization: Bearer $PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels" \
-            | jq -r '[.[].name] | join(",")')
-          
-          echo "当前标签: ${LABELS}"
-          
-          # 检查必需的标签
-          HAS_FRIEND_LINK=$([[ "$LABELS" == *"友链申请中"* ]] && echo "true" || echo "false")
-          HAS_STRUCTURE=$([[ "$LABELS" == *"文件结构符合"* ]] && echo "true" || echo "false")
-          HAS_URL=$([[ "$LABELS" == *"URL全部可达"* ]] && echo "true" || echo "false")
-          HAS_OWNERSHIP=$([[ "$LABELS" == *"所有权已验证"* ]] && echo "true" || echo "false")
-          
-          ALL_MET="true"
-          MISSING_COMMENT=""
-          
-          # 构建缺失条件的提示信息
-          if [[ "$HAS_FRIEND_LINK" != "true" ]]; then
-            ALL_MET="false"; MISSING_COMMENT+=$'\n- 友链申请中'
-          fi
-          if [[ "$HAS_STRUCTURE" != "true" ]]; then
-            ALL_MET="false"; MISSING_COMMENT+=$'\n- 文件结构符合'
-          fi
-          if [[ "$HAS_URL" != "true" ]]; then
-            ALL_MET="false"; MISSING_COMMENT+=$'\n- URL全部可达'
-          fi
-          if [[ "$HAS_OWNERSHIP" != "true" ]]; then
-            ALL_MET="false"; MISSING_COMMENT+=$'\n- 所有权已验证'
-          fi
-          
-          # 执行合并或提示缺失条件
-          if [[ "$ALL_MET" == "true" ]]; then
-            echo "✓ 所有条件满足 - 执行自动合并"
+  auto_merge:
+    needs: verify_ownership
+    if: >
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, '所有权已验证')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 自动合并PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const pull_number = context.payload.pull_request.number
             
-            MERGE_JSON=$(jq -n --arg title "Merge友链申请: ${SITE_NAME}" \
-              '{"merge_method":"squash","commit_title":$title}')
+            try {
+              // 获取PR信息以提取站点名称
+              const pr = await github.rest.pulls.get({
+                owner, repo, pull_number
+              })
+              
+              // 获取变更文件以提取name字段
+              const files = []
+              for await (const res of github.paginate.iterator(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              )) {
+                for (const f of res.data) {
+                  if (f.filename.match(/^src\/data\/[^\/]+\.py$/) && 
+                      f.filename !== 'src/data/__init__.py') {
+                    files.push(f)
+                  }
+                }
+              }
+              
+              let siteName = '未知站点'
+              if (files.length > 0) {
+                try {
+                  const firstFile = files[0]
+                  const contentResp = await github.rest.repos.getContent({
+                    owner, repo, path: firstFile.filename,
+                    ref: context.payload.pull_request.head.sha
+                  })
+                  
+                  if (!Array.isArray(contentResp.data) && contentResp.data?.content) {
+                    const content = Buffer.from(contentResp.data.content, 'base64').toString('utf8')
+                    const tempFileName = `/tmp/${firstFile.filename.replace(/\//g, '_')}`
+                    require('fs').writeFileSync(tempFileName, content)
+                    
+                    const { spawnSync } = require('child_process')
+                    const nameResult = spawnSync('python3', ['.github/scripts/extract_field.py', tempFileName, 'name'], {
+                      encoding: 'utf8', timeout: 10000
+                    })
+                    
+                    if (nameResult.status === 0) {
+                      const extractedName = nameResult.stdout.trim()
+                      if (extractedName) {
+                        siteName = extractedName
+                      }
+                    }
+                  }
+                } catch (e) {
+                  core.warning(`提取站点名称时出错: ${e.message}`)
+                }
+              }
+              
+              // 执行合并
+              await github.rest.pulls.merge({
+                owner, repo, pull_number,
+                merge_method: 'squash',
+                commit_title: `Merge友链申请: ${siteName}`
+              })
+              
+              core.info('PR合并成功')
+              
+              // 发送成功评论
+              const successComment = [
+                '## 🎉 友链申请合并成功！',
+                '',
+                '恭喜！您的友链申请已成功合并，稍后将在网站上显示。感谢您的贡献！'
+              ].join('\n')
+              
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pull_number,
+                body: successComment
+              })
+              
+            } catch (e) {
+              core.error(`自动合并失败: ${e.message}`)
+              
+              // 发送失败评论
+              const failComment = [
+                '## ⚠️ 合并失败',
+                '',
+                '自动合并过程中出现问题，请联系仓库维护者手动处理。',
+                '',
+                `错误详情: ${e.message}`
+              ].join('\n')
+              
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pull_number,
+                body: failComment
+              })
+            }
+
+  handle_comments:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      (contains(github.event.comment.body, '已修改') ||
+       contains(github.event.comment.body, '准备完毕'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: 处理用户评论
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const issue_number = context.payload.issue.number
+            const commentBody = context.payload.comment.body
             
-            RESPONSE=$(curl -sf -X PUT \
-              -H "Authorization: Bearer $PAT" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/merge" \
-              -d "$MERGE_JSON")
+            core.info(`收到评论: ${commentBody}`)
             
-            if [[ $? -eq 0 ]]; then
-              echo "✓ PR合并成功"
-              post_comment "## 🎉 友链申请合并成功！\n\n恭喜！您的友链申请已成功合并，稍后将在网站上显示。感谢您的贡献！"
-            else
-              echo "::error::PR合并失败"
-              post_comment "## ⚠️ 合并失败\n\n自动合并过程中出现问题，请联系仓库维护者手动处理。"
-            fi
-          else
-            echo "! 条件不满足 - 发送状态提醒"
-            COMMENT=$(printf '## ⏳ 自动合并条件未满足\n\n当前缺少以下验证标签：%s\n\n请完成所有验证步骤后再尝试合并。' "$MISSING_COMMENT")
-            post_comment "$COMMENT"
-          fi
+            // 获取PR信息
+            const pr = await github.rest.pulls.get({
+              owner, repo, pull_number: issue_number
+            })
+            
+            // 检查PR标签以确定应该触发哪个验证
+            const currentLabels = new Set((pr.data.labels || []).map(l => l.name))
+            
+            if (commentBody.includes('已修改')) {
+              // 触发文件结构重新验证
+              if (currentLabels.has('文件结构不一致')) {
+                core.info('触发文件结构重新验证')
+                // 移除不一致标签，让validate_structure job重新运行
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number,
+                    name: '文件结构不一致'
+                  })
+                } catch {}
+              }
+            } else if (commentBody.includes('准备完毕')) {
+              // 触发URL和所有权验证
+              core.info('触发URL和所有权重新验证')
+              // 这里不需要特殊处理，相关job会自动检测标签状态
+            }
