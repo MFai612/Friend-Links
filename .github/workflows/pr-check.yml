@@ -30,8 +30,7 @@ jobs:
 
       - name: Run PR checker
         env:
-          # Use repository PAT (if provided) to allow gh and GraphQL operations
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          # Use repository PAT to allow gh and GraphQL operations
           GH_TOKEN: ${{ secrets.PAT }}
           PAT: ${{ secrets.PAT }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}

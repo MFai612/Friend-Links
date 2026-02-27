@@ -15,14 +15,14 @@ import ast
 import requests
 
 GITHUB_API = "https://api.github.com"
-# Prefer a user-provided PAT environment variable; fall back to GITHUB_TOKEN
-TOKEN = os.environ.get("PAT") or os.environ.get("GITHUB_TOKEN")
+# Use PAT provided in repository secrets
+TOKEN = os.environ.get("PAT")
 EVENT_NAME = os.environ.get("GITHUB_EVENT_NAME")
 EVENT_PATH = os.environ.get("GITHUB_EVENT_PATH")
 REPO = os.environ.get("GITHUB_REPOSITORY")
 
 if not TOKEN or not EVENT_PATH or not REPO:
-    print("Missing required environment variables (PAT or GITHUB_TOKEN / GITHUB_EVENT_PATH / GITHUB_REPOSITORY)")
+    print("Missing required environment variables (PAT / GITHUB_EVENT_PATH / GITHUB_REPOSITORY)")
     sys.exit(1)
 
 HEADERS = {"Authorization": f"token {TOKEN}", "Accept": "application/vnd.github.v3+json"}
