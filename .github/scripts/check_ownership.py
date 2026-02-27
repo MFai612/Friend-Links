@@ -18,8 +18,7 @@ import requests
 
 # The URLs that must appear in the target website to prove ownership.
 OWNERSHIP_URLS = [
-    "https://waterspo.top",
-    "https://www.waterspo.top",
+    "https://waterspo.top"
 ]
 
 
