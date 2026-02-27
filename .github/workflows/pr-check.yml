@@ -743,7 +743,10 @@ jobs:
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       (contains(github.event.comment.body, '已修改') ||
-       contains(github.event.comment.body, '准备完毕'))
+       contains(github.event.comment.body, '准备完毕')) &&
+      github.event.comment.user.login != 'github-actions[bot]' &&
+      !startsWith(github.event.comment.body, '✅') &&
+      !startsWith(github.event.comment.body, '❌')
     runs-on: ubuntu-latest
     steps:
       - name: 处理用户评论
@@ -842,10 +845,10 @@ jobs:
                 }
               }
               
-              // 发送确认评论
+              // 发送确认评论（使用特殊的前缀避免触发循环）
               const confirmMessage = commentBody.includes('已修改') ? 
-                '✅ 已处理"已修改"请求，将重新验证文件结构' : 
-                '✅ 已处理"准备完毕"请求，将重新验证URL和所有权'
+                '> ✅ 已处理"已修改"请求，将重新验证文件结构' : 
+                '> ✅ 已处理"准备完毕"请求，将重新验证URL和所有权'
               
               await github.rest.issues.createComment({
                 owner, repo, issue_number,
