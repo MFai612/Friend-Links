@@ -46,7 +46,7 @@ jobs:
       - name: Get PR number
         id: pr-info
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             PR_NUMBER="${{ github.event.pull_request.number }}"
@@ -67,7 +67,7 @@ jobs:
         id: file-check
         timeout-minutes: 3
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
@@ -107,7 +107,7 @@ jobs:
         if: steps.file-check.outputs.valid_change == 'true'
         timeout-minutes: 2
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           gh pr edit "$PR_NUMBER" --add-label "友链申请中" || true
@@ -124,7 +124,7 @@ jobs:
         if: steps.file-check.outputs.valid_change == 'true'
         timeout-minutes: 3
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
@@ -182,7 +182,7 @@ jobs:
           steps.structure-validation.outputs.valid_structure == 'true'
         timeout-minutes: 2
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
@@ -220,7 +220,7 @@ jobs:
           steps.structure-validation.outputs.valid_structure == 'true'
         timeout-minutes: 5
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
@@ -291,7 +291,7 @@ jobs:
           steps.url-validation.outputs.all_uri_reachable == 'true'
         timeout-minutes: 5
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           CHANGED_FILES="${{ steps.file-check.outputs.changed_files }}"
@@ -362,7 +362,7 @@ jobs:
           steps.ownership-check.outputs.verification_passed == 'true'
         timeout-minutes: 3
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
           SITE_NAME="${{ steps.update-title.outputs.site_name }}"
